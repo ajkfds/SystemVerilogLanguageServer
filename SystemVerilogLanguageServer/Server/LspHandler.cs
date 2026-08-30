@@ -202,12 +202,21 @@ public sealed class LspHandler
         InMemoryProject project = GetOrCreateProjectForUri(file.Id);
         ISystemVerilogNamedElement? def = project.FindDefinition(file, index);
         if (def == null) return null;
+
+        // HoverContent.Build defers to a custom IHoverContentProvider when
+        // one has been installed process-wide. The plugin registers a
+        // richer provider that adds data type, bit width, port direction
+        // and port list. The default fallback (no provider) still emits a
+        // useful markdown block.
+        string? content = HoverContent.Build(def);
+        if (content == null) return null;
+
         return new Hover
         {
             Contents = new MarkupContent
             {
-                Kind = "plaintext",
-                Value = $"{def.Kind} {def.Name}",
+                Kind = "markdown",
+                Value = content,
             },
             Range = def.DefinitionRange is { } r ? ToLspRange(file, r) : null,
         };

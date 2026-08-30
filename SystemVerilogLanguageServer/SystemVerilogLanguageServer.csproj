@@ -13,4 +13,8 @@
     <ProjectReference Include="..\..\SystemVerilogCore\SystemVerilogCore\SystemVerilogCore.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="SystemVerilogLanguageServer.Tests" />
+  </ItemGroup>
+
 </Project>

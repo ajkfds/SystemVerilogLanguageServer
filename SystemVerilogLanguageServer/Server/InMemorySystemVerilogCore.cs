@@ -28,6 +28,17 @@ public sealed class InMemorySystemVerilogCore : ISystemVerilogCore
 
     internal InMemoryProject GetOrCreateProject(string projectId) =>
         _projects.GetOrAdd(projectId, id => new InMemoryProject(id));
+
+    /// <summary>
+    /// Test-only entry point that exposes the same per-project handle the
+    /// LSP dispatcher uses internally, so external test projects can build
+    /// up an in-memory file table without having to round-trip through
+    /// <c>textDocument/didOpen</c>. The handle is also retrievable through
+    /// <see cref="GetProjectAsync"/>; this overload just avoids the async
+    /// ceremony.
+    /// </summary>
+    public ISystemVerilogProject GetOrCreateProjectPublic(string projectId) =>
+        GetOrCreateProject(projectId);
 }
 
 internal sealed class InMemoryProject : ISystemVerilogProject

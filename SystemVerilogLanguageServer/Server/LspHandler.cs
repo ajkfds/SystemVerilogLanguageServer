@@ -184,15 +184,140 @@ public sealed class LspHandler
         ISystemVerilogDocument? doc = project.GetDocument(file);
         if (doc == null) return Array.Empty<DocumentSymbol>();
 
-        return new[]
+        // The in-memory core returns the file's synthetic root; the
+        // parser-backed adapter returns the same Root populated with the
+        // parsed top-level building blocks. We always start with the root
+        // and then flatten building blocks and their members as children
+        // so editors that know about the LSP hierarchy see a real tree.
+        List<DocumentSymbol> symbols = new List<DocumentSymbol>();
+        DocumentSymbol root = new DocumentSymbol
         {
-            new DocumentSymbol
+            Name = doc.Root.Name,
+            Kind = SymbolKind.Namespace,
+            Range = ToLspRange(file, new SystemVerilogRange(0, file.CodeDocument.Length)),
+            SelectionRange = ToLspRange(file, new SystemVerilogRange(0, 0)),
+        };
+
+        List<DocumentSymbol> rootChildren = new List<DocumentSymbol>();
+        foreach (ISystemVerilogBuildingBlock block in doc.Root.BuildingBlocks.Values)
+        {
+            DocumentSymbol blockSymbol = ToDocumentSymbol(file, block, SymbolKind.Module, SymbolKind.Package, SymbolKind.Class, SymbolKind.Interface);
+            AppendMembers(file, block, blockSymbol);
+            AppendNestedBlocks(file, block, blockSymbol);
+            rootChildren.Add(blockSymbol);
+        }
+        if (rootChildren.Count > 0) root.Children = rootChildren;
+
+        symbols.Add(root);
+        return symbols;
+    }
+
+    /// <summary>
+    /// Walks the building block hierarchy recursively and adds every
+    /// sub-block to <paramref name="parent"/>. Children is lazily created
+    /// so that leaf blocks do not emit an empty list.
+    /// </summary>
+    private static void AppendNestedBlocks(
+        ISystemVerilogFile file,
+        ISystemVerilogBuildingBlock block,
+        DocumentSymbol parent)
+    {
+        if (block.BuildingBlocks.Count == 0) return;
+        List<DocumentSymbol> children = parent.Children ?? new List<DocumentSymbol>();
+        foreach (ISystemVerilogBuildingBlock child in block.BuildingBlocks.Values)
+        {
+            DocumentSymbol childSymbol = ToDocumentSymbol(file, child, SymbolKind.Module, SymbolKind.Package, SymbolKind.Class, SymbolKind.Interface);
+            AppendMembers(file, child, childSymbol);
+            AppendNestedBlocks(file, child, childSymbol);
+            children.Add(childSymbol);
+        }
+        parent.Children = children;
+    }
+
+    /// <summary>
+    /// Adds every directly-declared named element of the block as a child
+    /// symbol. The kind is mapped from the LSP-friendly
+    /// <see cref="SystemVerilogNamedElementKind"/>.
+    /// </summary>
+    private static void AppendMembers(
+        ISystemVerilogFile file,
+        ISystemVerilogBuildingBlock block,
+        DocumentSymbol parent)
+    {
+        if (block.Members.Count == 0) return;
+        List<DocumentSymbol> children = parent.Children ?? new List<DocumentSymbol>();
+        foreach (ISystemVerilogNamedElement member in block.Members)
+        {
+            DocumentSymbol memberSymbol = new DocumentSymbol
             {
-                Name = doc.Root.Name,
-                Kind = SymbolKind.Namespace,
-                Range = ToLspRange(file, new SystemVerilogRange(0, file.CodeDocument.Length)),
-                SelectionRange = ToLspRange(file, new SystemVerilogRange(0, 0)),
+                Name = string.IsNullOrEmpty(member.Name) ? "<anonymous>" : member.Name,
+                Kind = ToSymbolKind(member.Kind),
+                Range = member.DefinitionRange.HasValue
+                    ? ToLspRange(file, member.DefinitionRange.Value)
+                    : ToLspRange(file, new SystemVerilogRange(0, 0)),
+                SelectionRange = member.DefinitionRange.HasValue
+                    ? ToLspRange(file, member.DefinitionRange.Value)
+                    : ToLspRange(file, new SystemVerilogRange(0, 0)),
+            };
+            children.Add(memberSymbol);
+        }
+        parent.Children = children;
+    }
+
+    private static DocumentSymbol ToDocumentSymbol(
+        ISystemVerilogFile file,
+        ISystemVerilogBuildingBlock block,
+        SymbolKind moduleKind,
+        SymbolKind packageKind,
+        SymbolKind classKind,
+        SymbolKind interfaceKind)
+    {
+        SystemVerilogRange range = block.DefinitionRange ?? new SystemVerilogRange(0, 0);
+        return new DocumentSymbol
+        {
+            Name = string.IsNullOrEmpty(block.Name) ? "<anonymous>" : block.Name,
+            Kind = block.Kind switch
+            {
+                SystemVerilogBuildingBlockKind.Module => moduleKind,
+                SystemVerilogBuildingBlockKind.Interface => interfaceKind,
+                SystemVerilogBuildingBlockKind.Package => packageKind,
+                SystemVerilogBuildingBlockKind.Class => classKind,
+                SystemVerilogBuildingBlockKind.Primitive => SymbolKind.Namespace,
+                SystemVerilogBuildingBlockKind.Program => SymbolKind.Namespace,
+                SystemVerilogBuildingBlockKind.Checker => SymbolKind.Namespace,
+                SystemVerilogBuildingBlockKind.GenerateBlock => SymbolKind.Namespace,
+                _ => SymbolKind.Namespace,
             },
+            Range = ToLspRange(file, range),
+            SelectionRange = ToLspRange(file, range),
+        };
+    }
+
+    private static SymbolKind ToSymbolKind(SystemVerilogNamedElementKind kind)
+    {
+        return kind switch
+        {
+            SystemVerilogNamedElementKind.Module => SymbolKind.Module,
+            SystemVerilogNamedElementKind.Interface => SymbolKind.Interface,
+            SystemVerilogNamedElementKind.Package => SymbolKind.Package,
+            SystemVerilogNamedElementKind.Class => SymbolKind.Class,
+            SystemVerilogNamedElementKind.Program => SymbolKind.Namespace,
+            SystemVerilogNamedElementKind.Checker => SymbolKind.Namespace,
+            SystemVerilogNamedElementKind.Primitive => SymbolKind.Namespace,
+            SystemVerilogNamedElementKind.Function => SymbolKind.Function,
+            SystemVerilogNamedElementKind.Task => SymbolKind.Method,
+            SystemVerilogNamedElementKind.Variable => SymbolKind.Variable,
+            SystemVerilogNamedElementKind.Net => SymbolKind.Variable,
+            SystemVerilogNamedElementKind.Port => SymbolKind.Variable,
+            SystemVerilogNamedElementKind.Parameter => SymbolKind.Constant,
+            SystemVerilogNamedElementKind.LocalParameter => SymbolKind.Constant,
+            SystemVerilogNamedElementKind.Typedef => SymbolKind.Class,
+            SystemVerilogNamedElementKind.Modport => SymbolKind.Interface,
+            SystemVerilogNamedElementKind.Instance => SymbolKind.Variable,
+            SystemVerilogNamedElementKind.PackageItem => SymbolKind.Variable,
+            SystemVerilogNamedElementKind.Macro => SymbolKind.Constant,
+            SystemVerilogNamedElementKind.GenerateBlock => SymbolKind.Namespace,
+            _ => SymbolKind.Variable,
         };
     }
 
@@ -339,6 +464,7 @@ public sealed class DocumentSymbol
     [JsonPropertyName("kind")] public SymbolKind Kind { get; set; }
     [JsonPropertyName("range")] public LspRange Range { get; set; } = new();
     [JsonPropertyName("selectionRange")] public LspRange SelectionRange { get; set; } = new();
+    [JsonPropertyName("children")] public List<DocumentSymbol>? Children { get; set; }
 }
 
 public enum SymbolKind

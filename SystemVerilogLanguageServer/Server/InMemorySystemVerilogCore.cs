@@ -121,6 +121,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile
 {
     private InMemoryDocument? _document;
     private readonly List<ISystemVerilogNamedElement> _symbols = new();
+    private readonly Dictionary<string, ISystemVerilogBuildingBlock> _buildingBlocks = new();
+    private readonly List<ISystemVerilogNamedElement> _members = new();
 
     public InMemoryFile(string id, string? absolutePath, bool isSystemVerilog, string text)
     {
@@ -135,9 +137,27 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     public bool IsSystemVerilog { get; }
     public ISystemVerilogCodeDocument CodeDocument { get; }
 
-    public IReadOnlyList<ISystemVerilogBuildingBlock> TopLevelBlocks => System.Array.Empty<ISystemVerilogBuildingBlock>();
+    public IReadOnlyList<ISystemVerilogBuildingBlock> TopLevelBlocks =>
+        new List<ISystemVerilogBuildingBlock>(_buildingBlocks.Values);
 
     public void AddSymbol(ISystemVerilogNamedElement symbol) => _symbols.Add(symbol);
+
+    /// <summary>
+    /// Registers a top-level building block so the documentSymbol
+    /// provider can list it. Re-adding the same name replaces the
+    /// previous block.
+    /// </summary>
+    public void AddBuildingBlock(ISystemVerilogBuildingBlock block) =>
+        _buildingBlocks[block.Name] = block;
+
+    /// <summary>
+    /// Registers a directly-declared named element of the file (e.g. a
+    /// package-level typedef or constant). These are exposed through the
+    /// root's <c>Members</c> collection.
+    /// </summary>
+    public void AddMember(ISystemVerilogNamedElement member) => _members.Add(member);
+
+    internal IReadOnlyList<ISystemVerilogNamedElement> Members => _members;
 
     public ISystemVerilogDocument GetOrCreateDocument() => _document ??= new InMemoryDocument(this);
 
@@ -288,10 +308,34 @@ internal sealed class RootBlock : ISystemVerilogBuildingBlock
     public string Name => "$root";
     public SystemVerilogBuildingBlockKind Kind => SystemVerilogBuildingBlockKind.Root;
     public SystemVerilogRange? DefinitionRange => null;
-    public IReadOnlyDictionary<string, ISystemVerilogBuildingBlock> BuildingBlocks { get; } = new Dictionary<string, ISystemVerilogBuildingBlock>();
-    public IReadOnlyList<ISystemVerilogNamedElement> Members { get; } = System.Array.Empty<ISystemVerilogNamedElement>();
-    public ISystemVerilogBuildingBlock? Owner => null;
     public ISystemVerilogFile? File { get; }
+
+    public IReadOnlyDictionary<string, ISystemVerilogBuildingBlock> BuildingBlocks
+    {
+        get
+        {
+            // The RootBlock forwards to the file's building-block table so
+            // LSP consumers see the same blocks the editor would render.
+            // A small wrapper dictionary is allocated on every access to
+            // keep the surface immutable; the in-memory core is only used
+            // for tests and the simple language server, so the cost is
+            // negligible.
+            InMemoryFile mem = (InMemoryFile)File!;
+            return new Dictionary<string, ISystemVerilogBuildingBlock>(mem.TopLevelBlocks
+                .ToDictionary(b => b.Name, b => b));
+        }
+    }
+
+    public IReadOnlyList<ISystemVerilogNamedElement> Members
+    {
+        get
+        {
+            InMemoryFile mem = (InMemoryFile)File!;
+            return mem.Members;
+        }
+    }
+
+    public ISystemVerilogBuildingBlock? Owner => null;
 
     SystemVerilogNamedElementKind ISystemVerilogNamedElement.Kind => SystemVerilogNamedElementKind.Unknown;
 }

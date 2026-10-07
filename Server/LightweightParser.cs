@@ -193,7 +193,11 @@ public static class LightweightParser
             };
             result.AddToken(t, sym.Start, sym.End);
         }
-        // reg 型の宣言は Register 色 (Variable の上書きは不要 — 便宜的に同色)
+        // remove the generic identifier tokens that exactly overlap a
+        // declaration symbol so the symbol kind wins
+        result.Tokens.RemoveAll(t =>
+            t.Type == TokenTypes.Identifier &&
+            result.Symbols.Exists(s => s.Start == t.Start && s.End == t.End));
         return result;
     }
 

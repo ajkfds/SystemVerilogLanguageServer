@@ -255,6 +255,58 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         }
         _parsedDocument = parsedDoc;
         BuildSymbolsFromParsedDocument(parsedDoc, text);
+        // collect parse messages (errors / warnings / notices) as LSP
+        // diagnostics; PushDiagnostics publishes them to the client
+        SetDiagnostics(CollectDiagnostics(parsedDoc));
+    }
+
+    /// <summary>
+    /// Converts the parser's message list (parse errors, warnings, notices,
+    /// hints) into ISystemVerilogDiagnostic entries. The message Index/Length
+    /// are document-relative so they map directly to LSP ranges.
+    /// </summary>
+    private static IEnumerable<ISystemVerilogDiagnostic> CollectDiagnostics(pluginVerilog.Verilog.ParsedDocument parsedDoc)
+    {
+        List<ISystemVerilogDiagnostic> result = new();
+        foreach (CodeEditor2.CodeEditor.ParsedDocument.Message message in parsedDoc.Messages)
+        {
+            pluginVerilog.Verilog.ParsedDocument.Message? verilogMessage =
+                message as pluginVerilog.Verilog.ParsedDocument.Message;
+            SystemVerilogSeverity severity = verilogMessage?.Type switch
+            {
+                pluginVerilog.Verilog.ParsedDocument.Message.MessageType.Error => SystemVerilogSeverity.Error,
+                pluginVerilog.Verilog.ParsedDocument.Message.MessageType.Warning => SystemVerilogSeverity.Warning,
+                pluginVerilog.Verilog.ParsedDocument.Message.MessageType.Notice => SystemVerilogSeverity.Information,
+                pluginVerilog.Verilog.ParsedDocument.Message.MessageType.Hint => SystemVerilogSeverity.Hint,
+                _ => SystemVerilogSeverity.Error,
+            };
+            string code = pluginVerilog.CoreBridge.DiagnosticCodeMap.FromMessage(message.Text);
+            int start = message.Index;
+            if (start < 0) continue; // skip messages without a document position
+            int length = message.Length;
+            if (length <= 0) length = 1;
+            result.Add(new InMemoryDiagnostic(
+                severity,
+                code,
+                message.Text,
+                new SystemVerilogRange(start, start + length)));
+        }
+        return result;
+    }
+
+    private sealed class InMemoryDiagnostic : ISystemVerilogDiagnostic
+    {
+        public InMemoryDiagnostic(SystemVerilogSeverity severity, string code, string message, SystemVerilogRange range)
+        {
+            Severity = severity;
+            Code = code;
+            Message = message;
+            Range = range;
+        }
+        public SystemVerilogSeverity Severity { get; }
+        public string Code { get; }
+        public string Message { get; }
+        public SystemVerilogRange Range { get; }
     }
 
     private pluginVerilog.Verilog.ParsedDocument? _parsedDocument;

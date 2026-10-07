@@ -535,6 +535,7 @@ public sealed class LspHandler
 
     private object? HandleSemanticTokens(JsonElement parameters, CancellationToken cancellationToken)
     {
+        Console.Error.WriteLine("HandleSemanticTokens called");
         if (!parameters.TryGetProperty("textDocument", out var td)) return new SemanticTokens { Data = new List<int>() };
         if (!td.TryGetProperty("uri", out var uriProp)) return new SemanticTokens { Data = new List<int>() };
         string uri = uriProp.GetString() ?? string.Empty;

@@ -38,6 +38,11 @@ internal static class Program
             cts.Cancel();
         };
 
+        // Server-initiated notifications (publishDiagnostics) are pushed
+        // synchronously while handling client messages, so the writer is
+        // only ever used from this single loop: no interleaving.
+        handler.NotificationSender = (msg) => writer.WriteMessageAsync(msg, cts.Token).GetAwaiter().GetResult();
+
         try
         {
             while (!cts.IsCancellationRequested)

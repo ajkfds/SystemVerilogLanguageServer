@@ -24,6 +24,22 @@ public sealed class LspHandler
     private readonly Dictionary<string, Func<JsonElement, CancellationToken, object?>> _requestHandlers = new();
     private readonly Dictionary<string, Action<JsonElement, CancellationToken>> _notificationHandlers = new();
 
+    /// <summary>
+    /// Injected by the host (Program.cs) so the handler can push server-initiated
+    /// notifications such as <c>textDocument/publishDiagnostics</c>. Null until
+    /// the host wires it; pushing is skipped while null.
+    /// </summary>
+    public Action<LspMessage>? NotificationSender { get; set; }
+
+    /// <summary>
+    /// Workspace root folders reported by the client in <c>initialize</c>
+    /// (absolute paths). Files with .sv/.svh/.v/.vh extensions under these
+    /// roots are loaded from disk so that cross-file references resolve even
+    /// for documents that were never opened in the editor.
+    /// </summary>
+    private readonly List<string> _workspaceRoots = new();
+    private bool _workspaceLoaded;
+
     public LspHandler(InMemorySystemVerilogCore core)
     {
         _core = core;
@@ -71,6 +87,8 @@ public sealed class LspHandler
 
     private object? HandleInitialize(JsonElement parameters, CancellationToken cancellationToken)
     {
+        CollectWorkspaceRoots(parameters);
+        LoadWorkspaceFiles(cancellationToken);
         return new InitializeResult
         {
             Capabilities = new ServerCapabilities
@@ -87,6 +105,129 @@ public sealed class LspHandler
             },
             ServerInfo = new ServerInfo { Name = "SystemVerilogLanguageServer", Version = "0.1.0" },
         };
+    }
+
+    /// <summary>
+    /// Reads rootUri / workspaceFolders from the initialize params and
+    /// stores their absolute paths for the workspace scan.
+    /// </summary>
+    private void CollectWorkspaceRoots(JsonElement parameters)
+    {
+        if (parameters.TryGetProperty("rootUri", out var rootUri) && rootUri.ValueKind == JsonValueKind.String)
+        {
+            string? path = UriToAbsolutePath(rootUri.GetString());
+            if (!string.IsNullOrEmpty(path)) _workspaceRoots.Add(path);
+        }
+        if (parameters.TryGetProperty("rootPath", out var rootPath) && rootPath.ValueKind == JsonValueKind.String)
+        {
+            string? path = UriToAbsolutePath(rootPath.GetString());
+            if (!string.IsNullOrEmpty(path)) _workspaceRoots.Add(path);
+        }
+        if (parameters.TryGetProperty("workspaceFolders", out var folders) && folders.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement folder in folders.EnumerateArray())
+            {
+                if (folder.TryGetProperty("uri", out var uri) && uri.ValueKind == JsonValueKind.String)
+                {
+                    string? path = UriToAbsolutePath(uri.GetString());
+                    if (!string.IsNullOrEmpty(path)) _workspaceRoots.Add(path);
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Scans the workspace roots recursively and loads every SystemVerilog
+    /// / Verilog source file from disk into the in-memory project so
+    /// cross-file definitions resolve even for never-opened documents.
+    /// </summary>
+    private void LoadWorkspaceFiles(CancellationToken cancellationToken)
+    {
+        if (_workspaceLoaded) return;
+        _workspaceLoaded = true;
+
+        InMemoryProject project = _core.GetOrCreateProject("default");
+        var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { ".sv", ".svh", ".v", ".vh" };
+
+        foreach (string root in _workspaceRoots)
+        {
+            if (!Directory.Exists(root)) continue;
+            IEnumerable<string> files;
+            try
+            {
+                files = Directory.EnumerateFiles(root, "*", new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true,
+                });
+            }
+            catch (Exception)
+            {
+                continue;
+            }
+
+            foreach (string file in files)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                string ext = Path.GetExtension(file);
+                if (!extensions.Contains(ext)) continue;
+
+                // skip build outputs / vcs work dirs that may contain huge dumps
+                string dirName = Path.GetFileName(Path.GetDirectoryName(file)) ?? string.Empty;
+                if (dirName is "obj" or "bin" or "publish" or "node_modules") continue;
+
+                try
+                {
+                    string text = File.ReadAllText(file);
+                    bool isSystemVerilog = ext is ".sv" or ".svh";
+                    string uri = PathToUri(file);
+                    project.AddOrUpdateFile(uri, file, text, isSystemVerilog);
+                }
+                catch (IOException)
+                {
+                    // unreadable file: skip
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // unreadable file: skip
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Converts an LSP document URI to an absolute local path, handling the
+    /// Windows drive-letter form (<c>file:///D:/x/y.sv</c>) and percent
+    /// escaping.
+    /// </summary>
+    private static string? UriToAbsolutePath(string? uri)
+    {
+        if (string.IsNullOrEmpty(uri)) return null;
+        if (uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+        {
+            try
+            {
+                // Uri handles drive letters, percent escapes and forward
+                // slashes uniformly on both Windows and Unix.
+                Uri u = new Uri(uri);
+                return u.LocalPath;
+            }
+            catch (UriFormatException)
+            {
+                return null;
+            }
+        }
+        return uri;
+    }
+
+    /// <summary>
+    /// Converts an absolute local path back into a canonical file:// URI
+    /// that round-trips with <see cref="UriToAbsolutePath"/>.
+    /// </summary>
+    private static string PathToUri(string absolutePath)
+    {
+        return new Uri(absolutePath).AbsoluteUri;
     }
 
     private object? HandleShutdown(JsonElement parameters, CancellationToken cancellationToken) => null;
@@ -114,7 +255,8 @@ public sealed class LspHandler
         bool isSystemVerilog = languageId.IndexOf("systemverilog", StringComparison.OrdinalIgnoreCase) >= 0;
 
         InMemoryProject project = GetOrCreateProjectForUri(uri);
-        project.AddOrUpdateFile(uri, ToAbsolutePath(uri), text, isSystemVerilog);
+        project.AddOrUpdateFile(uri, UriToAbsolutePath(uri), text, isSystemVerilog);
+        PushDiagnostics(project, uri);
     }
 
     private void HandleDidChange(JsonElement parameters, CancellationToken cancellationToken)
@@ -134,7 +276,8 @@ public sealed class LspHandler
         InMemoryProject project = GetOrCreateProjectForUri(uri);
         ISystemVerilogFile? existing = project.FindFile(uri);
         bool isSystemVerilog = existing?.IsSystemVerilog ?? true;
-        project.AddOrUpdateFile(uri, ToAbsolutePath(uri), text, isSystemVerilog);
+        project.AddOrUpdateFile(uri, UriToAbsolutePath(uri), text, isSystemVerilog);
+        PushDiagnostics(project, uri);
     }
 
     private void HandleDidClose(JsonElement parameters, CancellationToken cancellationToken)
@@ -347,6 +490,53 @@ public sealed class LspHandler
         };
     }
 
+    // ---------------------- diagnostics push ----------------------
+
+    /// <summary>
+    /// Publishes the document's diagnostics to the client as a
+    /// <c>textDocument/publishDiagnostics</c> notification. A no-op until
+    /// the host injects a <see cref="NotificationSender"/>.
+    /// </summary>
+    private void PushDiagnostics(InMemoryProject project, string uri)
+    {
+        Action<LspMessage>? sender = NotificationSender;
+        if (sender == null) return;
+
+        List<Diagnostic> diagnostics = new();
+        if (project.FindFile(uri) is InMemoryFile file)
+        {
+            ISystemVerilogDocument? doc = project.GetDocument(file);
+            if (doc != null)
+            {
+                foreach (ISystemVerilogDiagnostic d in doc.Diagnostics)
+                {
+                    diagnostics.Add(new Diagnostic
+                    {
+                        Range = ToLspRange(file, d.Range),
+                        Severity = d.Severity switch
+                        {
+                            SystemVerilogSeverity.Error => 1,
+                            SystemVerilogSeverity.Warning => 2,
+                            SystemVerilogSeverity.Information => 3,
+                            _ => 4,
+                        },
+                        Message = d.Message,
+                        Code = d.Code,
+                    });
+                }
+            }
+        }
+        sender(new LspMessage
+        {
+            Method = "textDocument/publishDiagnostics",
+            Params = new PublishDiagnosticsParams
+            {
+                Uri = uri,
+                Diagnostics = diagnostics,
+            },
+        });
+    }
+
     // ---------------------- helpers ----------------------
 
     private bool TryGetFileAndIndex(JsonElement parameters, out ISystemVerilogFile file, out int index)
@@ -366,22 +556,30 @@ public sealed class LspHandler
         int character = pos.TryGetProperty("character", out var charProp) ? charProp.GetInt32() : 0;
         int lineStart = found.CodeDocument.GetLineStartIndex(line);
         index = lineStart + character;
+
+        // LSP positions are UTF-16 code-unit based, the same as .NET string
+        // indices, so character maps 1:1. Clamp to the end of the line so a
+        // caret parked at the end of a line (or beyond it) resolves to the
+        // last word on the line instead of skipping into the next line.
+        int lineLength = found.CodeDocument.GetLineLength(line);
+        int lineEnd = lineStart + lineLength;
+        if (index > lineEnd) index = lineEnd;
         if (index > found.CodeDocument.Length) index = found.CodeDocument.Length;
+
+        // If the caret sits just after the last character of a word (the
+        // usual editor caret position), step back so TryGetWord finds it.
+        ISystemVerilogCodeDocument doc = found.CodeDocument;
+        if ((index >= doc.Length || !char.IsLetterOrDigit(doc.GetCharAt(index))) && index > 0
+            && (char.IsLetterOrDigit(doc.GetCharAt(index - 1)) || doc.GetCharAt(index - 1) == '_' || doc.GetCharAt(index - 1) == '$'))
+        {
+            index--;
+        }
+
         file = found;
         return true;
     }
 
     private InMemoryProject GetOrCreateProjectForUri(string uri) => _core.GetOrCreateProject("default");
-
-    private static string ToAbsolutePath(string uri)
-    {
-        if (uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
-        {
-            string local = uri.Substring("file://".Length);
-            return Uri.UnescapeDataString(local);
-        }
-        return uri;
-    }
 
     private static Location ToLocation(ISystemVerilogFile file, SystemVerilogRange range)
     {
@@ -478,6 +676,21 @@ public sealed class Hover
 {
     [JsonPropertyName("contents")] public MarkupContent Contents { get; set; } = new();
     [JsonPropertyName("range")] public LspRange? Range { get; set; }
+}
+
+public sealed class PublishDiagnosticsParams
+{
+    [JsonPropertyName("uri")] public string Uri { get; set; } = string.Empty;
+    [JsonPropertyName("diagnostics")] public List<Diagnostic> Diagnostics { get; set; } = new();
+}
+
+public sealed class Diagnostic
+{
+    [JsonPropertyName("range")] public LspRange Range { get; set; } = new();
+    [JsonPropertyName("severity")] public int Severity { get; set; }
+    [JsonPropertyName("code")] public string? Code { get; set; }
+    [JsonPropertyName("source")] public string? Source { get; set; } = "SystemVerilogLanguageServer";
+    [JsonPropertyName("message")] public string Message { get; set; } = string.Empty;
 }
 
 public sealed class MarkupContent

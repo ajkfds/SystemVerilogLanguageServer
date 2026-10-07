@@ -293,10 +293,31 @@ public sealed class LspHandler
     {
         if (!TryGetFileAndIndex(parameters, out var file, out int index)) return Array.Empty<Location>();
         InMemoryProject project = GetOrCreateProjectForUri(file.Id);
-        ISystemVerilogNamedElement? def = project.FindDefinition(file, index);
-        if (def?.DefinitionRange is { } r)
+
+        // manually registered symbols take precedence
+        ISystemVerilogNamedElement? manual = (file as InMemoryFile)?.FindManualElementAt(index);
+        if (manual?.DefinitionRange is { } mr)
         {
-            return new[] { ToLocation(file, r) };
+            return new[] { ToLocation(file, mr) };
+        }
+
+        // element at the caret (declaration or reference)
+        InMemoryElement? at = (file as InMemoryFile)?.FindElementAt(index);
+        if (at == null) return Array.Empty<Location>();
+
+        // resolve the declaration (same-file first, then project-wide)
+        ISystemVerilogNamedElement? def;
+        if (!at.IsReference)
+        {
+            def = at;
+        }
+        else
+        {
+            def = at.ResolveDeclaration() ?? at;
+        }
+        if (def is InMemoryElement de && de.DefinitionRange is { } r && de.File is { } df)
+        {
+            return new[] { ToLocation(df, r) };
         }
         return Array.Empty<Location>();
     }
@@ -316,6 +337,12 @@ public sealed class LspHandler
         }
         return locations;
     }
+
+    /// <summary>
+    /// Publishes parse diagnostics for a file. Called after didOpen /
+    /// didChange so the client Problems panel reflects the lightweight
+    /// parser result.
+    /// </summary>
 
     private object? HandleDocumentSymbol(JsonElement parameters, CancellationToken cancellationToken)
     {

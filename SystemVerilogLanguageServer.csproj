@@ -21,4 +21,10 @@
     <ProjectReference Include="..\SystemVerilogCore\SystemVerilogCore.csproj" />
   </ItemGroup>
 
+  <!-- Phase 10+: parser-backed symbols. The plugin's ParseEngine drives the
+       real Verilog parser without an Avalonia dispatcher. -->
+  <ItemGroup>
+    <ProjectReference Include="..\CodeEditor2VerilogPlugin\CodeEditor2VerilogPlugin\CodeEditor2VerilogPlugin.csproj" />
+  </ItemGroup>
+
 </Project>

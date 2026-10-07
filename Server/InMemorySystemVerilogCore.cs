@@ -201,11 +201,214 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
-    /// Runs the lightweight parser and materialises declarations and
-    /// references as InMemoryElements so definition / references / outline
-    /// queries have real data to work with.
+    /// Runs the real Verilog parser through the plugin's UI-free
+    /// CoreBridge.ParseEngine and materialises declarations and references
+    /// as InMemoryElements so definition / references / outline queries
+    /// have real data to work with.
     /// </summary>
     private void BuildSymbols(string text)
+    {
+        // The real parser is async but free of UI dependencies; the query
+        // path is synchronous, so block here (no dispatcher => no deadlock).
+        pluginVerilog.Verilog.ParsedDocument? parsedDoc = ParseSystemVerilog(text).GetAwaiter().GetResult();
+        if (parsedDoc == null || parsedDoc.Root == null)
+        {
+            // fall back to the lightweight parser when the real parser could
+            // not run (e.g. file object not usable in this host)
+            BuildSymbolsLightweight(text);
+            return;
+        }
+        BuildSymbolsFromParsedDocument(parsedDoc, text);
+    }
+
+    /// <summary>
+    /// Drives the plugin ParseEngine on an in-memory VerilogFile.
+    /// </summary>
+    private System.Threading.Tasks.Task<pluginVerilog.Verilog.ParsedDocument?> ParseSystemVerilog(string text)
+    {
+        // create / reuse a plugin-side VerilogFile for this in-memory file
+        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        return pluginVerilog.CoreBridge.ParseEngine.ParseSystemVerilogAsync(text, verilogFile);
+    }
+
+    private pluginVerilog.Data.VerilogFile? _verilogFile;
+    private CodeEditor2.Data.Project? _project;
+
+    private pluginVerilog.Data.VerilogFile CreateVerilogFile()
+    {
+        // register plugin file types once (UI-free)
+        if (CodeEditor2.Global.FileTypes.Count == 0)
+        {
+            new pluginVerilog.Plugin().Register();
+        }
+
+        CodeEditor2.Data.Project project = _project ??= new ParserProjectStub();
+        // Normally registered by Plugin.projectCreated (fired from
+        // Project.CreateAsync); the UI-free parse path bypasses it.
+        if (!project.ProjectProperties.ContainsKey(pluginVerilog.Plugin.StaticID))
+        {
+            project.ProjectProperties.Add(
+                pluginVerilog.Plugin.StaticID,
+                new pluginVerilog.ProjectProperty(project, new pluginVerilog.ProjectProperty.Setup()));
+        }
+
+        pluginVerilog.Data.VerilogFile file = new pluginVerilog.Data.VerilogFile()
+        {
+            Name = System.IO.Path.GetFileName(Id),
+            Project = project,
+            RelativePath = Id,
+        };
+        file.SystemVerilog = IsSystemVerilog;
+        return file;
+    }
+
+    private sealed class ParserProjectStub : CodeEditor2.Data.Project
+    {
+        [System.Diagnostics.CodeAnalysis.SetsRequiredMembers]
+        public ParserProjectStub() : base("lsp", System.IO.Path.GetTempPath(), "") { }
+    }
+
+    /// <summary>
+    /// Builds symbols from the real parser's ParsedDocument: building blocks
+    /// (module/interface/...) become InMemoryBlocks, data objects / functions
+    /// / tasks become declaration elements, WordReferences become references.
+    /// </summary>
+    private void BuildSymbolsFromParsedDocument(pluginVerilog.Verilog.ParsedDocument parsedDoc, string text)
+    {
+        var blockByBuildingBlock = new Dictionary<pluginVerilog.Verilog.BuildingBlocks.BuildingBlock, InMemoryBlock>();
+
+        void AppendBuildingBlocks(pluginVerilog.Verilog.BuildingBlocks.BuildingBlock bb, InMemoryBlock? parent)
+        {
+            if (bb == null || string.IsNullOrEmpty(bb.Name)) return;
+
+            SystemVerilogBuildingBlockKind kind = MapBuildingBlockKind(bb);
+            var block = new InMemoryBlock(bb.Name, kind, this);
+            blockByBuildingBlock[bb] = block;
+
+            if (parent != null) parent.AddNestedBlock(block);
+            else _buildingBlocks[block.Name] = block;
+
+            // declaration element for the block itself
+            int nameStart = FindNameStart(text, bb.Name);
+            if (nameStart >= 0)
+            {
+                var declElement = new InMemoryElement(bb.Name, MapNamedElementType(bb),
+                    new SystemVerilogRange(nameStart, nameStart + bb.Name.Length), this, parent);
+                block.SelfElement = declElement;
+                RegisterElement(declElement);
+            }
+
+            // members declared inside the block
+            foreach (pluginVerilog.Verilog.INamedElement element in bb.NamedElements)
+            {
+                if (element == null || string.IsNullOrEmpty(element.Name)) continue;
+
+                // nested building blocks are appended recursively (below)
+                if (element is pluginVerilog.Verilog.BuildingBlocks.BuildingBlock nested)
+                {
+                    AppendBuildingBlocks(nested, block);
+                    continue;
+                }
+
+                int start = FindNameStart(text, element.Name);
+                if (start < 0) continue;
+                var memberElement = new InMemoryElement(element.Name, MapNamedElementType(element),
+                    new SystemVerilogRange(start, start + element.Name.Length), this, block);
+                RegisterElement(memberElement);
+                block.AddMember(memberElement);
+            }
+        }
+
+        if (parsedDoc.Root is pluginVerilog.Verilog.BuildingBlocks.BuildingBlock rootBlock)
+        {
+            // root is a synthetic block; append it without registering itself
+            foreach (pluginVerilog.Verilog.INamedElement element in rootBlock.NamedElements)
+            {
+                if (element is pluginVerilog.Verilog.BuildingBlocks.BuildingBlock nested)
+                {
+                    AppendBuildingBlocks(nested, null);
+                }
+            }
+        }
+    }
+
+    private void RegisterElement(InMemoryElement element)
+    {
+        _allElements.Add(element);
+        if (!_byName.TryGetValue(element.Name, out var list))
+        {
+            list = new List<InMemoryElement>();
+            _byName[element.Name] = list;
+        }
+        list.Add(element);
+    }
+
+    private static SystemVerilogNamedElementKind MapBuildingBlockKindToNamed(SystemVerilogBuildingBlockKind kind) => kind switch
+    {
+        SystemVerilogBuildingBlockKind.Module => SystemVerilogNamedElementKind.Module,
+        SystemVerilogBuildingBlockKind.Interface => SystemVerilogNamedElementKind.Interface,
+        SystemVerilogBuildingBlockKind.Package => SystemVerilogNamedElementKind.Package,
+        SystemVerilogBuildingBlockKind.Program => SystemVerilogNamedElementKind.Program,
+        SystemVerilogBuildingBlockKind.Checker => SystemVerilogNamedElementKind.Checker,
+        SystemVerilogBuildingBlockKind.Primitive => SystemVerilogNamedElementKind.Primitive,
+        SystemVerilogBuildingBlockKind.Class => SystemVerilogNamedElementKind.Class,
+        _ => SystemVerilogNamedElementKind.Unknown,
+    };
+
+    private static SystemVerilogNamedElementKind MapNamedElementType(pluginVerilog.Verilog.INamedElement element)
+    {
+        if (element is pluginVerilog.Verilog.DataObjects.Nets.Net) return SystemVerilogNamedElementKind.Net;
+        if (element is pluginVerilog.Verilog.DataObjects.Port) return SystemVerilogNamedElementKind.Port;
+        if (element is pluginVerilog.Verilog.DataObjects.Constants.Parameter) return SystemVerilogNamedElementKind.Parameter;
+        if (element is pluginVerilog.Verilog.DataObjects.Constants.Localparam) return SystemVerilogNamedElementKind.LocalParameter;
+        if (element is pluginVerilog.Verilog.DataObjects.Typedef) return SystemVerilogNamedElementKind.Typedef;
+        if (element is pluginVerilog.Verilog.Function) return SystemVerilogNamedElementKind.Function;
+        if (element is pluginVerilog.Verilog.Task_) return SystemVerilogNamedElementKind.Task;
+        if (element is pluginVerilog.Verilog.BuildingBlocks.Module) return SystemVerilogNamedElementKind.Module;
+        if (element is pluginVerilog.Verilog.BuildingBlocks.Interface) return SystemVerilogNamedElementKind.Interface;
+        if (element is pluginVerilog.Verilog.BuildingBlocks.Package) return SystemVerilogNamedElementKind.Package;
+        if (element is pluginVerilog.Verilog.BuildingBlocks.Class) return SystemVerilogNamedElementKind.Class;
+        return SystemVerilogNamedElementKind.Variable;
+    }
+
+    private static SystemVerilogBuildingBlockKind MapBuildingBlockKind(pluginVerilog.Verilog.BuildingBlocks.BuildingBlock bb) => bb switch
+    {
+        pluginVerilog.Verilog.BuildingBlocks.Module => SystemVerilogBuildingBlockKind.Module,
+        pluginVerilog.Verilog.BuildingBlocks.Interface => SystemVerilogBuildingBlockKind.Interface,
+        pluginVerilog.Verilog.BuildingBlocks.Package => SystemVerilogBuildingBlockKind.Package,
+        pluginVerilog.Verilog.BuildingBlocks.Program => SystemVerilogBuildingBlockKind.Program,
+        pluginVerilog.Verilog.BuildingBlocks.Checker => SystemVerilogBuildingBlockKind.Checker,
+        pluginVerilog.Verilog.BuildingBlocks.Primitive => SystemVerilogBuildingBlockKind.Primitive,
+        pluginVerilog.Verilog.BuildingBlocks.Class => SystemVerilogBuildingBlockKind.Class,
+        _ => SystemVerilogBuildingBlockKind.Unknown,
+    };
+
+    /// <summary>
+    /// Finds the start index of the given identifier in the text (first
+    /// whole-word occurrence after line starts). Good enough for range
+    /// anchoring; the real parser does not expose declaration offsets here.
+    /// </summary>
+    private static int FindNameStart(string text, string name)
+    {
+        if (string.IsNullOrEmpty(name)) return -1;
+        int searchFrom = 0;
+        while (searchFrom <= text.Length - name.Length)
+        {
+            int idx = text.IndexOf(name, searchFrom, StringComparison.Ordinal);
+            if (idx < 0) return -1;
+            bool wordStart = idx == 0 || !(char.IsLetterOrDigit(text[idx - 1]) || text[idx - 1] == '_' || text[idx - 1] == '$');
+            int end = idx + name.Length;
+            bool wordEnd = end >= text.Length || !(char.IsLetterOrDigit(text[end]) || text[end] == '_' || text[end] == '$');
+            if (wordStart && wordEnd) return idx;
+            searchFrom = idx + 1;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// Original lightweight-parser based symbol build; kept as fallback.
+    /// </summary>
+    private void BuildSymbolsLightweight(string text)
     {
         ParseResult parsed = LightweightParser.Parse(text);
 
@@ -533,6 +736,38 @@ internal sealed class InMemoryBlock : ISystemVerilogBuildingBlock
 
     internal void AddNestedBlock(InMemoryBlock block) => _nested[block.Name] = block;
 
+    public IReadOnlyList<ISystemVerilogAutocompleteItem> AutocompleteItems
+    {
+        get
+        {
+            List<ISystemVerilogAutocompleteItem> items = new();
+            foreach (ISystemVerilogNamedElement member in _members)
+            {
+                items.Add(new SystemVerilogAutocompleteItem(
+                    member.Name,
+                    member.Kind switch
+                    {
+                        SystemVerilogNamedElementKind.Module => SystemVerilogAutocompleteItemKind.Module,
+                        SystemVerilogNamedElementKind.Interface => SystemVerilogAutocompleteItemKind.Interface,
+                        SystemVerilogNamedElementKind.Package => SystemVerilogAutocompleteItemKind.Package,
+                        SystemVerilogNamedElementKind.Program => SystemVerilogAutocompleteItemKind.Program,
+                        SystemVerilogNamedElementKind.Checker => SystemVerilogAutocompleteItemKind.Checker,
+                        SystemVerilogNamedElementKind.Primitive => SystemVerilogAutocompleteItemKind.Primitive,
+                        SystemVerilogNamedElementKind.Class => SystemVerilogAutocompleteItemKind.Class,
+                        SystemVerilogNamedElementKind.Function => SystemVerilogAutocompleteItemKind.Function,
+                        SystemVerilogNamedElementKind.Task => SystemVerilogAutocompleteItemKind.Task,
+                        SystemVerilogNamedElementKind.Typedef => SystemVerilogAutocompleteItemKind.Typedef,
+                        SystemVerilogNamedElementKind.Net => SystemVerilogAutocompleteItemKind.Net,
+                        SystemVerilogNamedElementKind.Port => SystemVerilogAutocompleteItemKind.Port,
+                        SystemVerilogNamedElementKind.Parameter => SystemVerilogAutocompleteItemKind.Parameter,
+                        SystemVerilogNamedElementKind.LocalParameter => SystemVerilogAutocompleteItemKind.LocalParameter,
+                        _ => SystemVerilogAutocompleteItemKind.Variable,
+                    }));
+            }
+            return items;
+        }
+    }
+
     public ISystemVerilogBuildingBlock? Owner => null;
 }
 
@@ -696,4 +931,18 @@ internal sealed class RootBlock : ISystemVerilogBuildingBlock
     public ISystemVerilogBuildingBlock? Owner => null;
 
     SystemVerilogNamedElementKind ISystemVerilogNamedElement.Kind => SystemVerilogNamedElementKind.Unknown;
+
+    public IReadOnlyList<ISystemVerilogAutocompleteItem> AutocompleteItems
+    {
+        get
+        {
+            InMemoryFile mem = (InMemoryFile)File!;
+            List<ISystemVerilogAutocompleteItem> items = new();
+            foreach (ISystemVerilogNamedElement member in mem.Members)
+            {
+                items.Add(new SystemVerilogAutocompleteItem(member.Name, SystemVerilogAutocompleteItemKind.Unknown));
+            }
+            return items;
+        }
+    }
 }

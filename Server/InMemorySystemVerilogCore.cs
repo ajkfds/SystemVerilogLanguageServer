@@ -283,13 +283,41 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             string code = pluginVerilog.CoreBridge.DiagnosticCodeMap.FromMessage(message.Text);
             int start = message.Index;
             if (start < 0) continue; // skip messages without a document position
-            int length = message.Length;
-            if (length <= 0) length = 1;
+
+            // The plugin's WordPointer length is the distance to the next
+            // token (an editor mark convention), not the word length. For
+            // LSP underlines the end must be the word end: scan the
+            // identifier at the message position.
+            CodeEditor2.CodeEditor.CodeDocument? doc = parsedDoc.CodeDocument;
+            int length = 1;
+            if (doc != null && start < doc.Length)
+            {
+                length = 0;
+                int i = start;
+                while (i < doc.Length && length < 256)
+                {
+                    char c = doc.GetCharAt(i);
+                    if (char.IsLetterOrDigit(c) || c == '_' || c == '$') { length++; i++; }
+                    else break;
+                }
+                if (length == 0)
+                {
+                    // non-identifier position (e.g. a punctuation token):
+                    // consume the token itself up to a delimiter
+                    while (i < doc.Length && length < 256)
+                    {
+                        char c = doc.GetCharAt(i);
+                        if (char.IsWhiteSpace(c) || c == '\r' || c == '\n') break;
+                        length++; i++;
+                    }
+                    if (length == 0) length = 1;
+                }
+            }
             result.Add(new InMemoryDiagnostic(
                 severity,
                 code,
                 message.Text,
-                new SystemVerilogRange(start, start + length)));
+                new SystemVerilogRange(start, length)));
         }
         return result;
     }

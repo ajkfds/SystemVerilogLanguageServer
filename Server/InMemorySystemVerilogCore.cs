@@ -165,6 +165,16 @@ internal sealed class InMemoryProject : ISystemVerilogProject
     {
         return Task.FromResult(FindReferences(file, index));
     }
+
+    /// <summary>
+    /// LSP textDocument/completion support: forwards to the file's
+    /// CompletionContext based autocomplete entries.
+    /// </summary>
+    public IReadOnlyList<pluginVerilog.CoreBridge.CompletionAdapter.CompletionEntry>? GetCompletionItems(ISystemVerilogFile file, int index)
+    {
+        if (file is not InMemoryFile mem) return null;
+        return mem.GetCompletionItems(index);
+    }
 }
 
 internal sealed class InMemoryFile : ISystemVerilogFile
@@ -209,6 +219,20 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     internal void ForceBuild()
     {
         EnsureBuilt();
+    }
+
+    /// <summary>
+    /// LSP textDocument/completion support: runs the plugin's
+    /// CompletionContext (partial parse driven autocomplete) on the current
+    /// parse result at the given index and returns plain label/kind entries.
+    /// Returns null when completion is unavailable (no real-parser result).
+    /// </summary>
+    internal IReadOnlyList<pluginVerilog.CoreBridge.CompletionAdapter.CompletionEntry>? GetCompletionItems(int index)
+    {
+        EnsureBuilt();
+        if (_parsedDocument == null) return null;
+        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        return pluginVerilog.CoreBridge.CompletionAdapter.GetCompletionItems(verilogFile, _parsedDocument, index);
     }
 
     /// <summary>

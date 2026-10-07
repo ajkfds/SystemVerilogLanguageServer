@@ -54,6 +54,7 @@ public sealed class LspHandler
         _requestHandlers["textDocument/references"] = HandleReferences;
         _requestHandlers["textDocument/documentSymbol"] = HandleDocumentSymbol;
         _requestHandlers["textDocument/hover"] = HandleHover;
+        _requestHandlers["textDocument/completion"] = HandleCompletion;
         _requestHandlers["textDocument/semanticTokens/full"] = HandleSemanticTokens;
 
         _notificationHandlers["initialized"] = HandleInitialized;
@@ -103,6 +104,10 @@ public sealed class LspHandler
                 DefinitionProvider = true,
                 ReferencesProvider = true,
                 DocumentSymbolProvider = true,
+                CompletionProvider = new CompletionCapability
+                {
+                    TriggerCharacters = new List<string> { ".", "`", "$" },
+                },
                 SemanticTokensProvider = new SemanticTokensCapability
                 {
                     Legend = new SemanticTokensLegend
@@ -538,6 +543,44 @@ public sealed class LspHandler
 
     // ---------------------- semantic tokens ----------------------
 
+    private object? HandleCompletion(JsonElement parameters, CancellationToken cancellationToken)
+    {
+        if (!parameters.TryGetProperty("textDocument", out var td)) return null;
+        if (!td.TryGetProperty("uri", out var uriProp)) return null;
+        string uri = uriProp.GetString() ?? string.Empty;
+        if (!parameters.TryGetProperty("position", out var pos)) return null;
+
+        InMemoryProject project = GetOrCreateProjectForUri(uri);
+        ISystemVerilogFile? found = project.FindFile(uri);
+        if (found == null) return null;
+
+        int line = pos.TryGetProperty("line", out var lineProp) ? lineProp.GetInt32() : 0;
+        int character = pos.TryGetProperty("character", out var charProp) ? charProp.GetInt32() : 0;
+        int lineStart = found.CodeDocument.GetLineStartIndex(line);
+        int index = lineStart + character;
+
+        // LSP positions are UTF-16 code-unit based, the same as .NET string
+        // indices. Clamp into the document (the caret may sit at the very
+        // end of the text, which is a valid completion position).
+        if (index > found.CodeDocument.Length) index = found.CodeDocument.Length;
+
+        IReadOnlyList<pluginVerilog.CoreBridge.CompletionAdapter.CompletionEntry>? entries =
+            project.GetCompletionItems(found, index);
+        if (entries == null) return null;
+
+        List<CompletionItem> items = new();
+        foreach (var e in entries)
+        {
+            items.Add(new CompletionItem
+            {
+                Label = e.Text,
+                Kind = e.Kind,
+                Detail = e.Detail,
+            });
+        }
+        return new CompletionList { IsIncomplete = false, Items = items };
+    }
+
     private object? HandleSemanticTokens(JsonElement parameters, CancellationToken cancellationToken)
     {
         Console.Error.WriteLine("HandleSemanticTokens called");
@@ -711,7 +754,28 @@ public sealed class ServerCapabilities
     [JsonPropertyName("definitionProvider")] public bool DefinitionProvider { get; set; }
     [JsonPropertyName("referencesProvider")] public bool ReferencesProvider { get; set; }
     [JsonPropertyName("documentSymbolProvider")] public bool DocumentSymbolProvider { get; set; }
+    [JsonPropertyName("completionProvider")] public CompletionCapability? CompletionProvider { get; set; }
     [JsonPropertyName("semanticTokensProvider")] public SemanticTokensCapability? SemanticTokensProvider { get; set; }
+}
+
+public sealed class CompletionCapability
+{
+    [JsonPropertyName("triggerCharacters")] public List<string>? TriggerCharacters { get; set; }
+    [JsonPropertyName("resolveProvider")] public bool ResolveProvider { get; set; }
+}
+
+public sealed class CompletionList
+{
+    [JsonPropertyName("isIncomplete")] public bool IsIncomplete { get; set; }
+    [JsonPropertyName("items")] public List<CompletionItem> Items { get; set; } = new();
+}
+
+public sealed class CompletionItem
+{
+    [JsonPropertyName("label")] public string Label { get; set; } = "";
+    /// <summary>LSP CompletionItemKind (3=Function, 6=Variable, 9=Module, 14=Keyword).</summary>
+    [JsonPropertyName("kind")] public int Kind { get; set; }
+    [JsonPropertyName("detail")] public string? Detail { get; set; }
 }
 
 public sealed class TextDocumentSyncOptions

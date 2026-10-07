@@ -218,8 +218,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             BuildSymbolsLightweight(text);
             return;
         }
+        _parsedDocument = parsedDoc;
         BuildSymbolsFromParsedDocument(parsedDoc, text);
     }
+
+    private pluginVerilog.Verilog.ParsedDocument? _parsedDocument;
 
     /// <summary>
     /// Drives the plugin ParseEngine on an in-memory VerilogFile.
@@ -592,8 +595,67 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     internal List<TokenInfo> GetTokens()
     {
         EnsureBuilt();
+        // Prefer tokens derived from the real parser's color segments when
+        // available (editor-identical coloring); fall back to the lightweight
+        // scanner for files the real parser could not handle.
+        List<TokenInfo>? parserTokens = GetParserColorTokens();
+        if (parserTokens != null && parserTokens.Count > 0)
+        {
+            _cachedTokens = parserTokens;
+            return parserTokens;
+        }
         return _cachedTokens ??= LightweightParser.Parse(((InMemoryCodeDocument)CodeDocument).GetText()).Tokens;
     }
+
+    /// <summary>
+    /// Builds tokens from the real parser's per-line color segments via the
+    /// plugin's ColorSegmentAdapter. Returns null when no parsed document is
+    /// available (e.g. the real parser was skipped).
+    /// </summary>
+    private List<TokenInfo>? GetParserColorTokens()
+    {
+        try
+        {
+            pluginVerilog.Verilog.ParsedDocument? parsed = _parsedDocument;
+            if (parsed == null) return null;
+
+            CodeEditor2.CodeEditor.CodeDrawStyle baseDrawStyle = new CodeEditor2.CodeEditor.CodeDrawStyle();
+            List<pluginVerilog.CoreBridge.ColorSegmentAdapter.Segment> segments =
+                pluginVerilog.CoreBridge.ColorSegmentAdapter.GetSegments(parsed);
+            if (segments.Count == 0) return null;
+
+            List<TokenInfo> tokens = new(segments.Count);
+            foreach (var s in segments)
+            {
+                tokens.Add(new TokenInfo { Start = s.Index, End = s.Index + s.Length, Type = ColorTypeToTokenType(s.Type) });
+            }
+            return tokens;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Maps the plugin CodeDrawStyle palette index to the LSP token type
+    /// legend (keyword, comment, string, number, macro, function, type,
+    /// variable, property, parameter, register, identifier).
+    /// </summary>
+    private static TokenTypes ColorTypeToTokenType(pluginVerilog.CodeDrawStyle.ColorType colorType) => colorType switch
+    {
+        pluginVerilog.CodeDrawStyle.ColorType.Keyword => TokenTypes.Keyword,
+        pluginVerilog.CodeDrawStyle.ColorType.Comment => TokenTypes.Comment,
+        pluginVerilog.CodeDrawStyle.ColorType.HighLightedComment => TokenTypes.Comment,
+        pluginVerilog.CodeDrawStyle.ColorType.CommentAnnotation => TokenTypes.Comment,
+        pluginVerilog.CodeDrawStyle.ColorType.Number => TokenTypes.Number,
+        pluginVerilog.CodeDrawStyle.ColorType.Identifier => TokenTypes.Identifier,
+        pluginVerilog.CodeDrawStyle.ColorType.Register => TokenTypes.Register,
+        pluginVerilog.CodeDrawStyle.ColorType.Net => TokenTypes.Property,
+        pluginVerilog.CodeDrawStyle.ColorType.Variable => TokenTypes.Variable,
+        pluginVerilog.CodeDrawStyle.ColorType.Parameter => TokenTypes.Parameter,
+        _ => TokenTypes.Identifier,
+    };
 
     private List<TokenInfo>? _cachedTokens;
 

@@ -269,7 +269,10 @@ public sealed class LspHandler
         bool isSystemVerilog = languageId.IndexOf("systemverilog", StringComparison.OrdinalIgnoreCase) >= 0;
 
         InMemoryProject project = GetOrCreateProjectForUri(uri);
-        project.AddOrUpdateFile(uri, UriToAbsolutePath(uri), text, isSystemVerilog);
+        InMemoryFile file = project.AddOrUpdateFile(uri, UriToAbsolutePath(uri), text, isSystemVerilog);
+        // parse eagerly so the first semantic-tokens / hover / definition
+        // query already sees real-parser results (not the lightweight fallback)
+        file.ForceBuild();
         PushDiagnostics(project, uri);
     }
 
@@ -290,7 +293,9 @@ public sealed class LspHandler
         InMemoryProject project = GetOrCreateProjectForUri(uri);
         ISystemVerilogFile? existing = project.FindFile(uri);
         bool isSystemVerilog = existing?.IsSystemVerilog ?? true;
-        project.AddOrUpdateFile(uri, UriToAbsolutePath(uri), text, isSystemVerilog);
+        InMemoryFile file = project.AddOrUpdateFile(uri, UriToAbsolutePath(uri), text, isSystemVerilog);
+        // parse eagerly so the first query after an edit sees real-parser results
+        file.ForceBuild();
         PushDiagnostics(project, uri);
     }
 

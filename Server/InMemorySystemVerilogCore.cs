@@ -201,6 +201,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
+    /// Forces the (lazy) symbol build immediately. Called by the LSP host on
+    /// didOpen / didChange so queries against the freshly edited text always
+    /// see real-parser results instead of a lightweight fallback on the very
+    /// first query.
+    /// </summary>
+    internal void ForceBuild()
+    {
+        EnsureBuilt();
+    }
+
+    /// <summary>
     /// Runs the real Verilog parser through the plugin's UI-free
     /// CoreBridge.ParseEngine and materialises declarations and references
     /// as InMemoryElements so definition / references / outline queries
@@ -333,6 +344,82 @@ internal sealed class InMemoryFile : ISystemVerilogFile
                 }
             }
         }
+
+        // collect references (use / assign sites) reported by the real parser
+        AppendReferences(parsedDoc.Root, new HashSet<pluginVerilog.Verilog.DataObjects.DataObject>());
+    }
+
+    /// <summary>
+    /// Walks the parsed building-block tree and registers every reference
+    /// site reported by the real parser (DataObject.DefinedReference /
+    /// UsedReferences / AssignedReferences) as InMemoryElements, so the LSP
+    /// references / definition queries work on real parser data.
+    /// </summary>
+    private void AppendReferences(pluginVerilog.Verilog.BuildingBlocks.BuildingBlock? block, HashSet<pluginVerilog.Verilog.DataObjects.DataObject> visited)
+    {
+        if (block == null) return;
+        foreach (pluginVerilog.Verilog.INamedElement element in block.NamedElements)
+        {
+            if (element is pluginVerilog.Verilog.BuildingBlocks.BuildingBlock nested)
+            {
+                AppendReferences(nested, visited);
+                continue;
+            }
+            if (element is pluginVerilog.Verilog.DataObjects.DataObject dataObject)
+            {
+                AppendReferences(dataObject, visited);
+            }
+        }
+    }
+
+    private void AppendReferences(pluginVerilog.Verilog.DataObjects.DataObject dataObject, HashSet<pluginVerilog.Verilog.DataObjects.DataObject> visited)
+    {
+        if (dataObject == null || !visited.Add(dataObject)) return;
+
+        // declaration site
+        if (dataObject.DefinedReference is { } definedRef && definedRef.Length > 0)
+        {
+            RegisterReference(dataObject.Name, definedRef.Index, definedRef.Length, isDeclaration: true);
+        }
+
+        // use sites
+        AppendReferenceList(dataObject.Name, dataObject.UsedReferences);
+        AppendReferenceList(dataObject.Name, dataObject.AssignedReferences);
+
+        // members of struct / class objects carry their own references
+        if (dataObject.NamedElements != null)
+        {
+            foreach (pluginVerilog.Verilog.INamedElement member in dataObject.NamedElements)
+            {
+                if (member is pluginVerilog.Verilog.DataObjects.DataObject memberDataObject)
+                {
+                    AppendReferences(memberDataObject, visited);
+                }
+            }
+        }
+    }
+
+    private void AppendReferenceList(string name, List<pluginVerilog.Verilog.WordReference>? references)
+    {
+        if (references == null) return;
+        foreach (pluginVerilog.Verilog.WordReference reference in references)
+        {
+            if (reference == null || reference.Length <= 0) continue;
+            RegisterReference(name, reference.Index, reference.Length, isDeclaration: false);
+        }
+    }
+
+    private void RegisterReference(string name, int index, int length, bool isDeclaration)
+    {
+        var element = new InMemoryElement(name, SystemVerilogNamedElementKind.Unknown,
+            new SystemVerilogRange(index, index + length), this, null, isReference: !isDeclaration);
+        _allElements.Add(element);
+        if (!_byName.TryGetValue(name, out var list))
+        {
+            list = new List<InMemoryElement>();
+            _byName[name] = list;
+        }
+        list.Add(element);
     }
 
     private void RegisterElement(InMemoryElement element)

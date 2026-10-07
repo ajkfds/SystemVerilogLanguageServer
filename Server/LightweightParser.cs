@@ -31,19 +31,24 @@ public static class LightweightParser
             // --- comments ---
             if (c == '/' && i + 1 < n && text[i + 1] == '/')
             {
+                int start = i;
                 while (i < n && text[i] != '\n') i++;
+                result.AddToken(TokenTypes.Comment, start, i);
                 continue;
             }
             if (c == '/' && i + 1 < n && text[i + 1] == '*')
             {
+                int start = i;
                 i += 2;
                 while (i + 1 < n && !(text[i] == '*' && text[i + 1] == '/')) i++;
                 i = Math.Min(i + 2, n);
+                result.AddToken(TokenTypes.Comment, start, i);
                 continue;
             }
             // --- strings ---
             if (c == '"')
             {
+                int start = i;
                 i++;
                 while (i < n && text[i] != '"')
                 {
@@ -51,6 +56,44 @@ public static class LightweightParser
                     i++;
                 }
                 i = Math.Min(i + 1, n);
+                result.AddToken(TokenTypes.String, start, i);
+                continue;
+            }
+            // --- macros (`NAME / `define) ---
+            if (c == '`' && i + 1 < n && IsIdentStart(text[i + 1]))
+            {
+                int start = i;
+                i++;
+                while (i < n && IsIdentChar(text[i])) i++;
+                result.AddToken(TokenTypes.Macro, start, i);
+                continue;
+            }
+            // --- system tasks / functions ($display) ---
+            if (c == '$' && i + 1 < n && IsIdentStart(text[i + 1]))
+            {
+                int start = i;
+                i++;
+                while (i < n && IsIdentChar(text[i])) i++;
+                result.AddToken(TokenTypes.Function, start, i);
+                continue;
+            }
+            // --- numbers (incl. sized literals like 8'hFF) ---
+            if (char.IsDigit(c))
+            {
+                int start = i;
+                i++;
+                while (i < n && (char.IsLetterOrDigit(text[i]) || text[i] == '_' || text[i] == '\'' || text[i] == '.' || text[i] == '?' || text[i] == 'x' || text[i] == 'X' || text[i] == 'z' || text[i] == 'Z'))
+                {
+                    // stop a based literal at the first whitespace after the base part
+                    if (text[i] == '\'')
+                    {
+                        i++;
+                        while (i < n && IsIdentChar(text[i])) i++;
+                        break;
+                    }
+                    i++;
+                }
+                result.AddToken(TokenTypes.Number, start, i);
                 continue;
             }
 
@@ -59,6 +102,11 @@ public static class LightweightParser
             int wordStart = i;
             while (i < n && IsIdentChar(text[i])) i++;
             string word = text.Substring(wordStart, i - wordStart);
+
+            if (IsKeywordWord(word))
+            {
+                result.AddToken(TokenTypes.Keyword, wordStart, i);
+            }
 
             switch (word)
             {
@@ -110,11 +158,91 @@ public static class LightweightParser
                     break;
 
                 default:
+                    if (!IsKeywordWord(word))
+                    {
+                        result.AddToken(TokenTypes.Identifier, wordStart, i);
+                    }
                     ParseDeclarationWord(result, blockStack, word, text, wordStart, i, n, ref pendingLabel);
                     break;
             }
         }
+
+        // declaration symbols override the plain identifier colour
+        foreach (SymbolInfo sym in result.Symbols)
+        {
+            TokenTypes t = sym.Kind switch
+            {
+                SystemVerilogNamedElementKindLocal.Module or
+                SystemVerilogNamedElementKindLocal.Interface or
+                SystemVerilogNamedElementKindLocal.Package or
+                SystemVerilogNamedElementKindLocal.Program or
+                SystemVerilogNamedElementKindLocal.Checker or
+                SystemVerilogNamedElementKindLocal.Primitive or
+                SystemVerilogNamedElementKindLocal.Class or
+                SystemVerilogNamedElementKindLocal.Function or
+                SystemVerilogNamedElementKindLocal.Task or
+                SystemVerilogNamedElementKindLocal.Typedef
+                    => TokenTypes.Type,
+                SystemVerilogNamedElementKindLocal.Parameter or
+                SystemVerilogNamedElementKindLocal.LocalParameter
+                    => TokenTypes.Parameter,
+                SystemVerilogNamedElementKindLocal.Net => TokenTypes.Property,
+                SystemVerilogNamedElementKindLocal.Variable => TokenTypes.Variable,
+                SystemVerilogNamedElementKindLocal.Port => TokenTypes.Variable,
+                _ => TokenTypes.Identifier,
+            };
+            result.AddToken(t, sym.Start, sym.End);
+        }
+        // reg 型の宣言は Register 色 (Variable の上書きは不要 — 便宜的に同色)
         return result;
+    }
+
+    private static bool IsKeywordWord(string w)
+    {
+        switch (w)
+        {
+            case "module": case "macromodule": case "endmodule":
+            case "interface": case "endinterface":
+            case "package": case "endpackage":
+            case "program": case "endprogram":
+            case "checker": case "endchecker":
+            case "primitive": case "endprimitive":
+            case "config": case "endconfig":
+            case "class": case "endclass": case "extends": case "implements": case "virtual":
+            case "function": case "endfunction":
+            case "task": case "endtask":
+            case "typedef": case "enum": case "struct": case "union": case "packed": case "tagged":
+            case "if": case "else": case "case": case "casex": case "casez": case "endcase": case "default":
+            case "for": case "foreach": case "forever": case "repeat": case "while": case "do":
+            case "break": case "continue": case "return":
+            case "begin": case "end": case "fork": case "join": case "join_any": case "join_none":
+            case "wait": case "wait_order": case "disable":
+            case "assert": case "assume": case "cover": case "expect":
+            case "property": case "endproperty": case "sequence": case "endsequence":
+            case "clocking": case "endclocking":
+            case "always": case "always_comb": case "always_ff": case "always_latch":
+            case "initial": case "final": case "assign": case "force": case "release": case "deassign": case "defparam":
+            case "generate": case "endgenerate": case "genvar":
+            case "bind": case "alias": case "import": case "export": case "extern": case "pure": case "context":
+            case "local": case "static": case "automatic":
+            case "input": case "output": case "inout": case "ref":
+            case "posedge": case "negedge": case "edge": case "iff":
+            case "with": case "inside": case "dist": case "unique": case "priority":
+            case "rand": case "randc": case "constraint": case "solve": case "before": case "cross":
+            case "coverpoint": case "covergroup": case "endgroup": case "sample":
+            case "randcase": case "randsequence":
+            case "new": case "null": case "this": case "super":
+            case "timeunit": case "timeprecision": case "timescale":
+            case "cell": case "use": case "liblist": case "instance": case "design": case "incdir": case "include": case "option": case "library":
+            case "nettype": case "interconnect": case "soft": case "type":
+            case "parameter": case "localparam": case "specparam":
+            case "var": case "const": case "signed": case "unsigned":
+            case "wire": case "wand": case "wor": case "tri": case "tri0": case "tri1": case "uwire":
+            case "supply0": case "supply1": case "scalared": case "vectored":
+            case "small": case "medium": case "large": case "strength":
+                return true;
+        }
+        return false;
     }
 
     // ---------------- structural helpers ----------------
@@ -423,6 +551,36 @@ public sealed class ParseResult
     public List<DiagnosticInfo> Diagnostics = new();
     /// <summary>All opened building-block scopes in declaration order; Owner chain is set.</summary>
     public List<Scope> Scopes = new();
+    /// <summary>Colouring tokens (keyword / comment / string / number / ...), in arbitrary order.</summary>
+    public List<TokenInfo> Tokens = new();
+
+    public void AddToken(TokenTypes type, int start, int end)
+    {
+        if (end > start) Tokens.Add(new TokenInfo { Type = type, Start = start, End = end });
+    }
+}
+
+public enum TokenTypes
+{
+    Keyword = 0,
+    Comment = 1,
+    String = 2,
+    Number = 3,
+    Macro = 4,
+    Function = 5,
+    Type = 6,
+    Variable = 7,
+    Property = 8,   // net
+    Parameter = 9,
+    Register = 10,
+    Identifier = 11,
+}
+
+public sealed class TokenInfo
+{
+    public TokenTypes Type;
+    public int Start;
+    public int End;
 }
 
 public sealed class SymbolInfo

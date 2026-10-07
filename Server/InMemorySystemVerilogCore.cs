@@ -385,6 +385,15 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// Manual symbols (registered via AddSymbol) take precedence over
     /// parser-produced elements for the definition / references queries.
     /// </summary>
+    /// <summary>Colouring tokens for the document (lazily parsed).</summary>
+    internal List<TokenInfo> GetTokens()
+    {
+        EnsureBuilt();
+        return _cachedTokens ??= LightweightParser.Parse(((InMemoryCodeDocument)CodeDocument).GetText()).Tokens;
+    }
+
+    private List<TokenInfo>? _cachedTokens;
+
     internal ISystemVerilogNamedElement? FindManualElementAt(int index)
     {
         foreach (ISystemVerilogNamedElement e in _manualList)

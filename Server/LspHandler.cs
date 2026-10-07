@@ -54,6 +54,7 @@ public sealed class LspHandler
         _requestHandlers["textDocument/references"] = HandleReferences;
         _requestHandlers["textDocument/documentSymbol"] = HandleDocumentSymbol;
         _requestHandlers["textDocument/hover"] = HandleHover;
+        _requestHandlers["textDocument/semanticTokens/full"] = HandleSemanticTokens;
 
         _notificationHandlers["initialized"] = HandleInitialized;
         _notificationHandlers["exit"] = HandleExit;
@@ -102,6 +103,19 @@ public sealed class LspHandler
                 DefinitionProvider = true,
                 ReferencesProvider = true,
                 DocumentSymbolProvider = true,
+                SemanticTokensProvider = new SemanticTokensCapability
+                {
+                    Legend = new SemanticTokensLegend
+                    {
+                        TokenTypes = new List<string>
+                        {
+                            "keyword", "comment", "string", "number", "macro",
+                            "function", "type", "variable", "property", "parameter", "register", "identifier",
+                        },
+                        TokenModifiers = new List<string>(),
+                    },
+                    Full = true,
+                },
             },
             ServerInfo = new ServerInfo { Name = "SystemVerilogLanguageServer", Version = "0.1.0" },
         };
@@ -517,6 +531,47 @@ public sealed class LspHandler
         };
     }
 
+    // ---------------------- semantic tokens ----------------------
+
+    private object? HandleSemanticTokens(JsonElement parameters, CancellationToken cancellationToken)
+    {
+        if (!parameters.TryGetProperty("textDocument", out var td)) return new SemanticTokens { Data = new List<int>() };
+        if (!td.TryGetProperty("uri", out var uriProp)) return new SemanticTokens { Data = new List<int>() };
+        string uri = uriProp.GetString() ?? string.Empty;
+        InMemoryProject project = GetOrCreateProjectForUri(uri);
+        if (project.FindFile(uri) is not InMemoryFile file) return new SemanticTokens { Data = new List<int>() };
+
+        List<TokenInfo> tokens = file.GetTokens();
+
+        // sort by start offset, then build LSP relative encoding
+        tokens.Sort((a, b) => a.Start.CompareTo(b.Start));
+        ISystemVerilogCodeDocument doc = file.CodeDocument;
+        List<int> data = new();
+        int prevLine = 0;
+        int prevChar = 0;
+        foreach (TokenInfo t in tokens)
+        {
+            int startLine = doc.GetLineAt(t.Start);
+            int startChar = t.Start - doc.GetLineStartIndex(startLine);
+            int endLine = doc.GetLineAt(t.End);
+            // multi-line tokens are clamped to their first line (LSP limitation)
+            int endChar = (endLine == startLine) ? t.End - doc.GetLineStartIndex(endLine)
+                : doc.GetLineLength(startLine);
+            if (endChar <= startChar) continue;
+
+            int deltaLine = startLine - prevLine;
+            int deltaChar = (startLine == prevLine) ? startChar - prevChar : startChar;
+            data.Add(deltaLine);
+            data.Add(deltaChar);
+            data.Add(endChar - startChar);
+            data.Add((int)t.Type);
+            data.Add(0); // no modifiers
+            prevLine = startLine;
+            prevChar = startChar;
+        }
+        return new SemanticTokens { Data = data };
+    }
+
     // ---------------------- diagnostics push ----------------------
 
     /// <summary>
@@ -649,6 +704,7 @@ public sealed class ServerCapabilities
     [JsonPropertyName("definitionProvider")] public bool DefinitionProvider { get; set; }
     [JsonPropertyName("referencesProvider")] public bool ReferencesProvider { get; set; }
     [JsonPropertyName("documentSymbolProvider")] public bool DocumentSymbolProvider { get; set; }
+    [JsonPropertyName("semanticTokensProvider")] public SemanticTokensCapability? SemanticTokensProvider { get; set; }
 }
 
 public sealed class TextDocumentSyncOptions
@@ -718,6 +774,23 @@ public sealed class Diagnostic
     [JsonPropertyName("code")] public string? Code { get; set; }
     [JsonPropertyName("source")] public string? Source { get; set; } = "SystemVerilogLanguageServer";
     [JsonPropertyName("message")] public string Message { get; set; } = string.Empty;
+}
+
+public sealed class SemanticTokensCapability
+{
+    [JsonPropertyName("legend")] public SemanticTokensLegend Legend { get; set; } = new();
+    [JsonPropertyName("full")] public bool Full { get; set; }
+}
+
+public sealed class SemanticTokensLegend
+{
+    [JsonPropertyName("tokenTypes")] public List<string> TokenTypes { get; set; } = new();
+    [JsonPropertyName("tokenModifiers")] public List<string> TokenModifiers { get; set; } = new();
+}
+
+public sealed class SemanticTokens
+{
+    [JsonPropertyName("data")] public List<int> Data { get; set; } = new();
 }
 
 public sealed class MarkupContent

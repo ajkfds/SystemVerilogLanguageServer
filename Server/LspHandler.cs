@@ -569,6 +569,7 @@ public sealed class LspHandler
             prevLine = startLine;
             prevChar = startChar;
         }
+        Console.Error.WriteLine($"semanticTokens: {data.Count / 5} tokens for {uri}");
         return new SemanticTokens { Data = data };
     }
 

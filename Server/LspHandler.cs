@@ -213,6 +213,49 @@ public sealed class LspHandler
                 }
             }
         }
+
+        ParseWorkspaceFiles(project, cancellationToken);
+    }
+
+    /// <summary>
+    /// Parses every loaded workspace file so their building blocks are
+    /// registered into the project-wide plugin name spaces
+    /// (DefinitionNameSpace / PackageNameSpace / UnitNameSpace). Without this,
+    /// only documents the client happened to query would be parsed and modules
+    /// declared in other files would stay unresolved ("unfound module").
+    ///
+    /// <para>
+    /// Two passes are run: the first registers the building blocks of all
+    /// files, the second re-parses the files that still report errors so that
+    /// cross-file references (which could not resolve while the dependency was
+    /// still unregistered) get resolved. This mirrors the editor's multi-pass
+    /// ParseHierarchy.
+    /// </para>
+    /// </summary>
+    private void ParseWorkspaceFiles(InMemoryProject project, CancellationToken cancellationToken)
+    {
+        List<InMemoryFile> files = new();
+        foreach (ISystemVerilogFile f in project.Files)
+        {
+            if (f is InMemoryFile mem) files.Add(mem);
+        }
+
+        // pass 1: register every file's building blocks
+        foreach (InMemoryFile file in files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            file.ForceBuild();
+        }
+
+        // pass 2: re-parse the files that still report errors so cross-file
+        // references resolve now that every dependency is registered.
+        foreach (InMemoryFile file in files)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            file.RebuildIfHasErrors();
+        }
+
+        Console.Error.WriteLine($"workspace: {files.Count} SystemVerilog/Verilog files parsed");
     }
 
     /// <summary>

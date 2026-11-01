@@ -41,13 +41,63 @@ public sealed class InMemorySystemVerilogCore : ISystemVerilogCore
         GetOrCreateProject(projectId);
 }
 
+/// <summary>
+/// Minimal UI-free <see cref="CodeEditor2.Data.Project"/> stub. The Project
+/// constructor is protected, so a derived class in this assembly calls it
+/// without running Project.CreateAsync (which needs the Avalonia dispatcher).
+/// One instance is shared by every file of an <see cref="InMemoryProject"/> so
+/// that all files register into / resolve from the same plugin name spaces
+/// (see <see cref="InMemoryProject.PluginProject"/>).
+/// </summary>
+internal sealed class ParserProjectStub : CodeEditor2.Data.Project
+{
+    [System.Diagnostics.CodeAnalysis.SetsRequiredMembers]
+    public ParserProjectStub() : base("lsp", System.IO.Path.GetTempPath(), "") { }
+}
+
 internal sealed class InMemoryProject : ISystemVerilogProject
 {
     private readonly ConcurrentDictionary<string, InMemoryFile> _files = new();
 
+    /// <summary>
+    /// The single plugin-side <see cref="CodeEditor2.Data.Project"/> shared by
+    /// every file of this project.
+    ///
+    /// <para>
+    /// The plugin resolves cross-file symbols through
+    /// <c>ProjectProperty.DefinitionNameSpace</c> /
+    /// <c>PackageNameSpace</c> / <c>UnitNameSpace</c>, and
+    /// <c>VerilogFile.ProjectProperty</c> is looked up from
+    /// <c>Project.ProjectProperties["Verilog"]</c>. Giving each file its own
+    /// Project (and therefore its own ProjectProperty) means every file has a
+    /// private set of name spaces, so a module declared in another file of the
+    /// same workspace is never found ("unfound module"). Sharing one Project
+    /// makes all files register into / resolve from the same name spaces.
+    /// </para>
+    /// </summary>
+    internal CodeEditor2.Data.Project PluginProject { get; }
+
     public InMemoryProject(string id)
     {
         Id = id;
+
+        // register the plugin file types once (UI-free) so that
+        // pluginVerilog.Plugin.StaticID / ProjectProperty are available
+        if (CodeEditor2.Global.FileTypes.Count == 0)
+        {
+            new pluginVerilog.Plugin().Register();
+        }
+
+        PluginProject = new ParserProjectStub();
+        // Normally registered by Plugin.projectCreated (fired from
+        // Project.CreateAsync); the UI-free parse path bypasses it.
+        if (!PluginProject.ProjectProperties.ContainsKey(pluginVerilog.Plugin.StaticID))
+        {
+            PluginProject.ProjectProperties.Add(
+                pluginVerilog.Plugin.StaticID,
+                new pluginVerilog.ProjectProperty(
+                    PluginProject, new pluginVerilog.ProjectProperty.Setup()));
+        }
     }
 
     public string Id { get; }
@@ -222,6 +272,51 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
+    /// Re-runs the parse when the previous pass reported at least one error.
+    /// Used by the workspace-wide second parse pass: a cross-file reference
+    /// cannot resolve while the dependency is still unregistered, so the file
+    /// that reported "unfound module" during the first pass is parsed again
+    /// after every file has been registered (same idea as the editor's
+    /// multi-pass ParseHierarchy).
+    /// </summary>
+    internal void RebuildIfHasErrors()
+    {
+        if (_manualSymbols) return;
+        if (!_built) return;                 // never parsed: nothing to retry
+        if (_parsedDocument == null) return;
+        if (!HasErrors()) return;
+        Rebuild();
+    }
+
+    private bool HasErrors()
+    {
+        foreach (ISystemVerilogDiagnostic d in _diagnostics)
+        {
+            if (d.Severity == SystemVerilogSeverity.Error) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Discards the current parse result and parses the current text again.
+    /// </summary>
+    internal void Rebuild()
+    {
+        if (_manualSymbols) return;
+        _allElements.Clear();
+        _byName.Clear();
+        _buildingBlocks.Clear();
+        _members.Clear();
+        _diagnostics.Clear();
+        _parsedDocument = null;
+        _document = null;
+        _built = false;
+        // drop the cached plugin file so the new parse uses a fresh document
+        _verilogFile = null;
+        EnsureBuilt();
+    }
+
+    /// <summary>
     /// LSP textDocument/completion support: runs the plugin's
     /// CompletionContext (partial parse driven autocomplete) on the current
     /// parse result at the given index and returns plain label/kind entries.
@@ -350,25 +445,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     private pluginVerilog.Data.VerilogFile? _verilogFile;
-    private CodeEditor2.Data.Project? _project;
 
     private pluginVerilog.Data.VerilogFile CreateVerilogFile()
     {
-        // register plugin file types once (UI-free)
-        if (CodeEditor2.Global.FileTypes.Count == 0)
-        {
-            new pluginVerilog.Plugin().Register();
-        }
-
-        CodeEditor2.Data.Project project = _project ??= new ParserProjectStub();
-        // Normally registered by Plugin.projectCreated (fired from
-        // Project.CreateAsync); the UI-free parse path bypasses it.
-        if (!project.ProjectProperties.ContainsKey(pluginVerilog.Plugin.StaticID))
-        {
-            project.ProjectProperties.Add(
-                pluginVerilog.Plugin.StaticID,
-                new pluginVerilog.ProjectProperty(project, new pluginVerilog.ProjectProperty.Setup()));
-        }
+        // Share the single plugin-side Project owned by the InMemoryProject.
+        // A per-file Project would give every file its own ProjectProperty and
+        // therefore its own DefinitionNameSpace / PackageNameSpace /
+        // UnitNameSpace, so modules declared in other files of the same
+        // workspace would never resolve ("unfound module").
+        CodeEditor2.Data.Project project = ProjectOwner?.PluginProject
+            ?? throw new InvalidOperationException(
+                "InMemoryFile must be created through InMemoryProject.AddOrUpdateFile");
 
         pluginVerilog.Data.VerilogFile file = new pluginVerilog.Data.VerilogFile()
         {
@@ -378,12 +465,6 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         };
         file.SystemVerilog = IsSystemVerilog;
         return file;
-    }
-
-    private sealed class ParserProjectStub : CodeEditor2.Data.Project
-    {
-        [System.Diagnostics.CodeAnalysis.SetsRequiredMembers]
-        public ParserProjectStub() : base("lsp", System.IO.Path.GetTempPath(), "") { }
     }
 
     /// <summary>

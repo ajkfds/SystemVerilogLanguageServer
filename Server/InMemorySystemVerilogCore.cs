@@ -77,6 +77,12 @@ internal sealed class InMemoryProject : ISystemVerilogProject
     /// </summary>
     internal CodeEditor2.Data.Project PluginProject { get; }
 
+    /// <summary>
+    /// Absolute workspace root folders (reported by the client at initialize).
+    /// Used to render workspace-relative paths in the hierarchy tree.
+    /// </summary>
+    internal List<string> WorkspaceRoots { get; } = new();
+
     public InMemoryProject(string id)
     {
         Id = id;
@@ -245,7 +251,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         Id = id;
         AbsolutePath = absolutePath;
         IsSystemVerilog = isSystemVerilog;
-        CodeDocument = new InMemoryCodeDocument(text);
+        _codeDocument = new InMemoryCodeDocument(text);
     }
 
     /// <summary>
@@ -269,6 +275,22 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     internal void ForceBuild()
     {
         EnsureBuilt();
+    }
+
+    /// <summary>
+    /// Current text of the in-memory document.
+    /// </summary>
+    internal string CodeDocumentText => ((InMemoryCodeDocument)CodeDocument).GetText();
+
+    /// <summary>
+    /// Replaces the document text (used by didSave when the saved content
+    /// differs from what didChange delivered, e.g. format-on-save).
+    /// </summary>
+    internal void SetText(string text)
+    {
+        _codeDocument = new InMemoryCodeDocument(text);
+        _document = null;
+        _verilogFile = null;
     }
 
     /// <summary>
@@ -314,6 +336,140 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         // drop the cached plugin file so the new parse uses a fresh document
         _verilogFile = null;
         EnsureBuilt();
+    }
+
+    // ------------------------------------------------------------------
+    // RTL hierarchy (NavigatePanel equivalent) for the VS Code tree view
+    // ------------------------------------------------------------------
+
+    /// <summary>
+    /// Number of top level hierarchy entries of this file (its instantiations,
+    /// or one entry per building block when the file declares several).
+    /// </summary>
+    internal int GetHierarchyRootCount() => GetHierarchyRoots().Count;
+
+    /// <summary>
+    /// Top level entries of the file's RTL hierarchy. A file with a single
+    /// building block (the common case) exposes that building block's own
+    /// instantiations; a file with several building blocks exposes one entry
+    /// per building block (same rule as the editor's NavigatePanel
+    /// <c>Updater.addSubItemsMultiBuildingBlock</c>).
+    /// </summary>
+    internal List<HierarchyNodeDescriptor> GetHierarchyRoots()
+    {
+        EnsureBuilt();
+        List<HierarchyNodeDescriptor> roots = new();
+        if (_parsedDocument?.Root == null) return roots;
+
+        List<pluginVerilog.Verilog.BuildingBlocks.BuildingBlock> buildingBlocks =
+            _parsedDocument.Root.BuildingBlocks.Values.ToList();
+
+        if (buildingBlocks.Count == 0) return roots;
+
+        if (buildingBlocks.Count == 1)
+        {
+            foreach (pluginVerilog.Verilog.Items.IBuildingBlockInstantiation inst
+                     in buildingBlocks[0].GetBuildingBlockInstantiations())
+            {
+                HierarchyNodeDescriptor? node = CreateInstanceNode(inst, new HashSet<string>());
+                if (node != null) roots.Add(node);
+            }
+            return roots;
+        }
+
+        // several building blocks in one file: one entry per building block,
+        // each expanded to the instantiations inside that block.
+        foreach (pluginVerilog.Verilog.BuildingBlocks.BuildingBlock block in buildingBlocks)
+        {
+            HierarchyNodeDescriptor blockNode = new()
+            {
+                Label = block.Name,
+                Detail = block.GetType().Name,
+                Uri = Id,
+            };
+            foreach (pluginVerilog.Verilog.Items.IBuildingBlockInstantiation inst
+                     in block.GetBuildingBlockInstantiations())
+            {
+                HierarchyNodeDescriptor? node = CreateInstanceNode(inst, new HashSet<string>());
+                if (node != null) blockNode.Children.Add(node);
+            }
+            roots.Add(blockNode);
+        }
+        return roots;
+    }
+
+    /// <summary>
+    /// Builds one hierarchy node for a building block instantiation, recursing
+    /// into the instantiated building block so the whole instance tree is
+    /// available. <paramref name="visiting"/> guards against recursive module
+    /// instantiation (module A instantiating itself, or a mutual A-&gt;B-&gt;A
+    /// loop), which would otherwise recurse forever.
+    /// </summary>
+    private HierarchyNodeDescriptor? CreateInstanceNode(
+        pluginVerilog.Verilog.Items.IBuildingBlockInstantiation inst,
+        HashSet<string> visiting)
+    {
+        string label = string.IsNullOrEmpty(inst.Name) ? inst.SourceName : inst.Name;
+        if (string.IsNullOrEmpty(label) && string.IsNullOrEmpty(inst.SourceName)) return null;
+
+        int? line = null;
+        int? character = null;
+        if (inst.BeginIndexReference != null)
+        {
+            line = GetLineOfIndex(inst.BeginIndexReference.Index);
+            character = GetCharacterOfIndex(inst.BeginIndexReference.Index);
+        }
+
+        HierarchyNodeDescriptor node = new()
+        {
+            Label = label ?? "",
+            Detail = inst.SourceName,
+            Uri = Id,
+            StartLine = line,
+            StartCharacter = character,
+        };
+
+        string? sourceName = inst.SourceName;
+        if (string.IsNullOrEmpty(sourceName)) return node;
+
+        // recursion guard: a building block already on the current path is not
+        // expanded again (the node itself is still shown).
+        string visitKey = sourceName! + "#" + (inst.ParameterOverrides?.Count ?? 0);
+        if (visiting.Contains(visitKey)) return node;
+        visiting.Add(visitKey);
+        try
+        {
+            pluginVerilog.Verilog.BuildingBlocks.BuildingBlock? instanced = inst.GetInstancedBuildingBlock();
+            if (instanced != null)
+            {
+                foreach (pluginVerilog.Verilog.Items.IBuildingBlockInstantiation child
+                         in instanced.GetBuildingBlockInstantiations())
+                {
+                    HierarchyNodeDescriptor? childNode = CreateInstanceNode(child, visiting);
+                    if (childNode != null) node.Children.Add(childNode);
+                }
+            }
+        }
+        finally
+        {
+            visiting.Remove(visitKey);
+        }
+        return node;
+    }
+
+    private int? GetLineOfIndex(int index)
+    {
+        CodeEditor2.CodeEditor.CodeDocument? doc = _parsedDocument?.CodeDocument;
+        if (doc == null || index < 0 || index > doc.Length) return null;
+        return doc.GetLineAt(index);
+    }
+
+    private int? GetCharacterOfIndex(int index)
+    {
+        CodeEditor2.CodeEditor.CodeDocument? doc = _parsedDocument?.CodeDocument;
+        if (doc == null || index < 0 || index > doc.Length) return null;
+        int line = doc.GetLineAt(index);
+        return index - doc.GetLineStartIndex(line);
     }
 
     /// <summary>
@@ -793,7 +949,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     public string Id { get; }
     public string? AbsolutePath { get; }
     public bool IsSystemVerilog { get; }
-    public ISystemVerilogCodeDocument CodeDocument { get; }
+    private ISystemVerilogCodeDocument _codeDocument;
+    public ISystemVerilogCodeDocument CodeDocument => _codeDocument;
 
     /// <summary>Project this file belongs to (set by the project on add).</summary>
     internal InMemoryProject? ProjectOwner;

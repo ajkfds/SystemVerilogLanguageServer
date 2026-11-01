@@ -56,12 +56,17 @@ public sealed class LspHandler
         _requestHandlers["textDocument/hover"] = HandleHover;
         _requestHandlers["textDocument/completion"] = HandleCompletion;
         _requestHandlers["textDocument/semanticTokens/full"] = HandleSemanticTokens;
+        // custom (non-standard) requests used by the VS Code tree view.
+        // LSP allows implementation-defined methods as long as they use the
+        // "$/" free-for-all namespace or a vendor prefix; "rtl/" is ours.
+        _requestHandlers["rtl/hierarchy"] = HandleHierarchy;
 
         _notificationHandlers["initialized"] = HandleInitialized;
         _notificationHandlers["exit"] = HandleExit;
         _notificationHandlers["textDocument/didOpen"] = HandleDidOpen;
         _notificationHandlers["textDocument/didChange"] = HandleDidChange;
         _notificationHandlers["textDocument/didClose"] = HandleDidClose;
+        _notificationHandlers["textDocument/didSave"] = HandleDidSave;
     }
 
     public bool TryHandleRequest(string method, JsonElement parameters, CancellationToken cancellationToken, out object? result)
@@ -166,6 +171,10 @@ public sealed class LspHandler
         _workspaceLoaded = true;
 
         InMemoryProject project = _core.GetOrCreateProject("default");
+        foreach (string root in _workspaceRoots)
+        {
+            if (!project.WorkspaceRoots.Contains(root)) project.WorkspaceRoots.Add(root);
+        }
         var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { ".sv", ".svh", ".v", ".vh" };
 
@@ -354,6 +363,36 @@ public sealed class LspHandler
         string uri = uriProp.GetString() ?? string.Empty;
         InMemoryProject project = GetOrCreateProjectForUri(uri);
         project.RemoveFile(uri);
+    }
+
+    /// <summary>
+    /// The client sends the saved text with <c>textDocument/didSave</c>.
+    /// Re-parsing here keeps the workspace name spaces in sync with the file on
+    /// disk, which matters when a save changes a module signature that other
+    /// files instantiate (the didChange handler already re-parses on edit, so
+    /// this is mostly about refreshing diagnostics / hierarchy on save).
+    /// </summary>
+    private void HandleDidSave(JsonElement parameters, CancellationToken cancellationToken)
+    {
+        if (!parameters.TryGetProperty("textDocument", out var td)) return;
+        if (!td.TryGetProperty("uri", out var uriProp)) return;
+        string uri = uriProp.GetString() ?? string.Empty;
+
+        InMemoryProject project = GetOrCreateProjectForUri(uri);
+        ISystemVerilogFile? existing = project.FindFile(uri);
+        if (existing is not InMemoryFile mem) return;
+
+        string text = parameters.TryGetProperty("text", out var textProp)
+            ? textProp.GetString() ?? string.Empty
+            : string.Empty;
+
+        if (!string.IsNullOrEmpty(text) && text != mem.CodeDocumentText)
+        {
+            // text changed outside didChange (e.g. format-on-save): update it
+            mem.SetText(text);
+        }
+        mem.Rebuild();
+        PushDiagnostics(project, uri);
     }
 
     private object? HandleDefinition(JsonElement parameters, CancellationToken cancellationToken)
@@ -663,6 +702,157 @@ public sealed class LspHandler
         }
         Console.Error.WriteLine($"semanticTokens: {data.Count / 5} tokens for {uri}");
         return new SemanticTokens { Data = data };
+    }
+
+    // ---------------------- rtl/hierarchy (custom request) ----------------------
+
+    /// <summary>
+    /// Custom request used by the VS Code "RTL Hierarchy" tree view.
+    ///
+    /// <para>
+    /// The VS Code File Explorer cannot be extended with extra child nodes
+    /// (no provider API), so the extension renders the NavigatePanel-equivalent
+    /// tree in its own Custom Tree View. This handler returns that tree.
+    /// </para>
+    ///
+    /// <para>
+    /// Params: <c>{ "uri": "file:///...", "nodePath": [0,1,0] }</c>.
+    /// An empty / missing <c>nodePath</c> asks for the top level (the
+    /// workspace file/folder list). Each element of <c>nodePath</c> is an
+    /// index into the <c>children</c> array returned for its parent node, so
+    /// the extension can expand the tree lazily: one request per expanded
+    /// node, no need to serialise the whole hierarchy at once.
+    /// </para>
+    ///
+    /// Response: <c>{ "nodes": [ RtlHierarchyNode, ... ] }</c>.
+    /// </summary>
+    private object? HandleHierarchy(JsonElement parameters, CancellationToken cancellationToken)
+    {
+        // nodePath = sequence of child indexes from the workspace root
+        List<int> nodePath = new();
+        if (parameters.TryGetProperty("nodePath", out var pathElement)
+            && pathElement.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement e in pathElement.EnumerateArray())
+            {
+                if (e.ValueKind == JsonValueKind.Number) nodePath.Add(e.GetInt32());
+            }
+        }
+
+        // file of the node being expanded (null for the workspace root)
+        string? fileUri = null;
+        if (parameters.TryGetProperty("uri", out var uriElement) && uriElement.ValueKind == JsonValueKind.String)
+        {
+            fileUri = uriElement.GetString();
+        }
+
+        InMemoryProject project = _core.GetOrCreateProject("default");
+
+        if (nodePath.Count == 0 && string.IsNullOrEmpty(fileUri))
+        {
+            // top level: workspace files
+            return new HierarchyResult { Nodes = BuildWorkspaceNodes(project) };
+        }
+
+        if (string.IsNullOrEmpty(fileUri) || project.FindFile(fileUri) is not InMemoryFile file)
+        {
+            return new HierarchyResult { Nodes = new List<HierarchyNode>() };
+        }
+
+        return new HierarchyResult { Nodes = BuildFileNodes(file, nodePath) };
+    }
+
+    /// <summary>
+    /// Top level of the hierarchy view: every workspace SystemVerilog / Verilog
+    /// file, in path order (mirrors the editor's NavigatePanel project tree).
+    /// </summary>
+    private static List<HierarchyNode> BuildWorkspaceNodes(InMemoryProject project)
+    {
+        List<HierarchyNode> nodes = new();
+        IEnumerable<InMemoryFile> files = project.Files
+            .OfType<InMemoryFile>()
+            .OrderBy(f => f.AbsolutePath ?? f.Id, StringComparer.OrdinalIgnoreCase);
+
+        foreach (InMemoryFile file in files)
+        {
+            string path = file.AbsolutePath ?? file.Id;
+            nodes.Add(new HierarchyNode
+            {
+                Label = Path.GetFileName(path),
+                Uri = file.Id,
+                Kind = HierarchyNodeKind.File,
+                Detail = GetRelativePath(project, path),
+                HasChildren = file.GetHierarchyRootCount() > 0,
+            });
+        }
+        return nodes;
+    }
+
+    /// <summary>
+    /// Children of the node identified by <paramref name="nodePath"/> in the
+    /// given file. Works purely on the lazily built symbol list so the tree does
+    /// not have to be materialised ahead of time.
+    /// </summary>
+    private static List<HierarchyNode> BuildFileNodes(InMemoryFile file, List<int> nodePath)
+    {
+        // an empty nodePath means "the first level of this file"
+        List<HierarchyNodeDescriptor> children =
+            nodePath.Count == 0 ? file.GetHierarchyRoots() : ResolveChildren(file, nodePath);
+
+        List<HierarchyNode> result = new();
+        foreach (HierarchyNodeDescriptor child in children)
+        {
+            result.Add(new HierarchyNode
+            {
+                Label = child.Label,
+                Kind = HierarchyNodeKind.Instance,
+                Detail = child.Detail,
+                Uri = child.Uri,
+                StartLine = child.StartLine,
+                StartCharacter = child.StartCharacter,
+                HasChildren = child.Children.Count > 0,
+            });
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Walks the <paramref name="nodePath"/> (a sequence of child indexes from
+    /// the file's first level) and returns the children of the addressed node.
+    /// Returns an empty list when the path does not resolve (the file changed
+    /// between the request that produced the path and this one).
+    /// </summary>
+    private static List<HierarchyNodeDescriptor> ResolveChildren(InMemoryFile file, List<int> nodePath)
+    {
+        List<HierarchyNodeDescriptor> level = file.GetHierarchyRoots();
+
+        HierarchyNodeDescriptor? node = null;
+        foreach (int index in nodePath)
+        {
+            if (index < 0 || index >= level.Count) return new List<HierarchyNodeDescriptor>();
+            node = level[index];
+            level = node.Children;
+        }
+        return node?.Children ?? new List<HierarchyNodeDescriptor>();
+    }
+
+    /// <summary>
+    /// Workspace-relative path of an absolute file path, for the tree node
+    /// description (falls back to the file name when no workspace root matches).
+    /// </summary>
+    private static string? GetRelativePath(InMemoryProject project, string absolutePath)
+    {
+        foreach (string root in project.WorkspaceRoots)
+        {
+            string normalizedRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (absolutePath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return absolutePath.Substring(normalizedRoot.Length)
+                    .TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                    .Replace(Path.DirectorySeparatorChar, '/');
+            }
+        }
+        return null;
     }
 
     // ---------------------- diagnostics push ----------------------

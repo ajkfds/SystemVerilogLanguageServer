@@ -21,9 +21,20 @@ namespace SystemVerilogLanguageServer
         [JsonPropertyName("label")]
         public string Label { get; set; } = "";
 
-        /// <summary><see cref="HierarchyNodeKind.File"/> or <see cref="HierarchyNodeKind.Instance"/>.</summary>
+        /// <summary>
+        /// <see cref="HierarchyNodeKind.Folder"/> / <see cref="HierarchyNodeKind.File"/>
+        /// or <see cref="HierarchyNodeKind.Instance"/>.
+        /// </summary>
         [JsonPropertyName("kind")]
         public string Kind { get; set; } = HierarchyNodeKind.Instance;
+
+        /// <summary>
+        /// Workspace-relative folder path of a <see cref="HierarchyNodeKind.Folder"/>
+        /// node ("src/sub", no leading / trailing slash). The extension echoes it
+        /// back as <c>folderPath</c> to expand the folder.
+        /// </summary>
+        [JsonPropertyName("folderPath")]
+        public string? FolderPath { get; set; }
 
         /// <summary>File URI the node lives in (used to open it on click).</summary>
         [JsonPropertyName("uri")]
@@ -46,6 +57,7 @@ namespace SystemVerilogLanguageServer
 
     internal static class HierarchyNodeKind
     {
+        public const string Folder = "folder";
         public const string File = "file";
         public const string Instance = "instance";
     }

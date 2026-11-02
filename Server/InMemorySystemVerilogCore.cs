@@ -133,6 +133,25 @@ internal sealed class InMemoryProject : ISystemVerilogProject
     }
 
     /// <summary>
+    /// Registers a workspace file, keeping the existing entry (and therefore
+    /// its parse result) when the text did not change. Used by the workspace
+    /// rescan: recreating every InMemoryFile on each refresh discarded the
+    /// cached parse of the whole project and made a refresh re-parse
+    /// everything.
+    /// </summary>
+    internal InMemoryFile AddOrUpdateFileIfChanged(string id, string? absolutePath, string text, bool isSystemVerilog)
+    {
+        if (_files.TryGetValue(id, out InMemoryFile? existing)
+            && existing.AbsolutePath == absolutePath
+            && existing.IsSystemVerilog == isSystemVerilog
+            && existing.CodeDocumentText == text)
+        {
+            return existing;
+        }
+        return AddOrUpdateFile(id, absolutePath, text, isSystemVerilog);
+    }
+
+    /// <summary>
     /// Project-wide declaration lookup by name (cross-file definition
     /// resolution). Only files with the same language kind participate.
     /// </summary>
@@ -276,6 +295,13 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     {
         EnsureBuilt();
     }
+
+    /// <summary>
+    /// True once this file's symbols have been built (i.e. it was parsed at
+    /// least once). Used by the workspace rescan to identify the files that
+    /// still need a (re-)parse.
+    /// </summary>
+    internal bool IsBuilt => _built;
 
     /// <summary>
     /// Current text of the in-memory document.

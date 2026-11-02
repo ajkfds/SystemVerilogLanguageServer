@@ -40,6 +40,13 @@ public sealed class LspHandler
     private readonly List<string> _workspaceRoots = new();
     private bool _workspaceLoaded;
 
+    /// <summary>
+    /// URIs the client currently has open (didOpen .. didClose). Used by the
+    /// workspace rescan so a file that is being edited is never dropped from
+    /// the project just because it disappeared from disk temporarily.
+    /// </summary>
+    private readonly HashSet<string> _openUris = new();
+
     public LspHandler(InMemorySystemVerilogCore core)
     {
         _core = core;
@@ -175,8 +182,41 @@ public sealed class LspHandler
         {
             if (!project.WorkspaceRoots.Contains(root)) project.WorkspaceRoots.Add(root);
         }
+
+        ScanWorkspaceFiles(project, cancellationToken);
+        ParseWorkspaceFiles(project, cancellationToken);
+    }
+
+    /// <summary>
+    /// Re-reads the workspace roots from disk so the RTL hierarchy tree shows
+    /// files created / removed after the initial scan. Files that are open in
+    /// the client are left untouched (their text is the authoritative version).
+    /// </summary>
+    private void RescanWorkspaceFiles(InMemoryProject project)
+    {
+        if (_workspaceRoots.Count == 0) return;
+        List<InMemoryFile> added = ScanWorkspaceFiles(project, CancellationToken.None);
+        // only the files that actually appeared / changed need parsing; the
+        // rest keep the parse result from the previous scan
+        ParseFiles(added, CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Enumerates every SystemVerilog / Verilog file under the workspace roots
+    /// and registers it in the in-memory project. Files that are currently
+    /// open in the client are skipped: their buffered text is newer than the
+    /// file on disk. Returns the files that were newly added or whose text
+    /// changed, so the caller can parse only those.
+    /// </summary>
+    private List<InMemoryFile> ScanWorkspaceFiles(InMemoryProject project, CancellationToken cancellationToken)
+    {
+        List<InMemoryFile> changed = new();
         var extensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         { ".sv", ".svh", ".v", ".vh" };
+
+        // directories whose contents are build output / VCS dumps: never scan
+        var skippedDirectories = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        { "obj", "bin", "publish", "node_modules", ".git", ".svn", ".hg" };
 
         foreach (string root in _workspaceRoots)
         {
@@ -201,16 +241,20 @@ public sealed class LspHandler
                 string ext = Path.GetExtension(file);
                 if (!extensions.Contains(ext)) continue;
 
-                // skip build outputs / vcs work dirs that may contain huge dumps
-                string dirName = Path.GetFileName(Path.GetDirectoryName(file)) ?? string.Empty;
-                if (dirName is "obj" or "bin" or "publish" or "node_modules") continue;
+                if (IsInSkippedDirectory(root, file, skippedDirectories)) continue;
+
+                string uri = PathToUri(file);
+                // an open document is authoritative: do not overwrite the
+                // buffered (possibly unsaved) text with the on-disk copy
+                if (_openUris.Contains(uri)) continue;
 
                 try
                 {
                     string text = File.ReadAllText(file);
                     bool isSystemVerilog = ext is ".sv" or ".svh";
-                    string uri = PathToUri(file);
-                    project.AddOrUpdateFile(uri, file, text, isSystemVerilog);
+                    InMemoryFile registered =
+                        project.AddOrUpdateFileIfChanged(uri, file, text, isSystemVerilog);
+                    if (!registered.IsBuilt) changed.Add(registered);
                 }
                 catch (IOException)
                 {
@@ -223,7 +267,73 @@ public sealed class LspHandler
             }
         }
 
-        ParseWorkspaceFiles(project, cancellationToken);
+        PruneDeletedWorkspaceFiles(project);
+        return changed;
+    }
+
+    /// <summary>
+    /// Drops files that vanished from disk so the workspace tree does not keep
+    /// listing stale entries after a rescan. Only files under a workspace root
+    /// are considered; open documents are left alone (a document can be open
+    /// while its file is temporarily missing, and its buffer is authoritative).
+    /// </summary>
+    private void PruneDeletedWorkspaceFiles(InMemoryProject project)
+    {
+        if (_workspaceRoots.Count == 0) return;
+
+        List<string> stale = new();
+        foreach (ISystemVerilogFile f in project.Files)
+        {
+            if (f is not InMemoryFile file) continue;
+            string? path = file.AbsolutePath;
+            if (string.IsNullOrEmpty(path)) continue;      // never came from disk
+            if (_openUris.Contains(file.Id)) continue;     // open: keep the buffer
+            if (!IsUnderWorkspaceRoot(path)) continue;     // outside the workspace
+            if (File.Exists(path)) continue;
+
+            stale.Add(file.Id);
+        }
+
+        foreach (string id in stale)
+        {
+            project.RemoveFile(id);
+        }
+    }
+
+    /// <summary>
+    /// True when <paramref name="absolutePath"/> lives under one of the
+    /// workspace roots.
+    /// </summary>
+    private bool IsUnderWorkspaceRoot(string absolutePath)
+    {
+        foreach (string root in _workspaceRoots)
+        {
+            string normalizedRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                    + Path.DirectorySeparatorChar;
+            if (absolutePath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// True when any directory segment of <paramref name="file"/> below the
+    /// workspace <paramref name="root"/> is a build output / VCS directory
+    /// (matching only the immediate parent would miss nested cases such as
+    /// <c>build/obj/x.sv</c>).
+    /// </summary>
+    private static bool IsInSkippedDirectory(string root, string file, HashSet<string> skipped)
+    {
+        string? directory = Path.GetDirectoryName(file);
+        while (!string.IsNullOrEmpty(directory))
+        {
+            string name = Path.GetFileName(directory);
+            if (skipped.Contains(name)) return true;
+            string? parent = Path.GetDirectoryName(directory);
+            if (parent == null || string.Equals(parent, directory, StringComparison.Ordinal)) break;
+            if (string.Equals(directory, root.TrimEnd(Path.DirectorySeparatorChar), StringComparison.OrdinalIgnoreCase)) break;
+            directory = parent;
+        }
+        return false;
     }
 
     /// <summary>
@@ -249,6 +359,17 @@ public sealed class LspHandler
             if (f is InMemoryFile mem) files.Add(mem);
         }
 
+        ParseFiles(files, cancellationToken);
+    }
+
+    /// <summary>
+    /// Two-pass parse of <paramref name="files"/>: the first pass registers
+    /// every file's building blocks, the second re-parses the files that still
+    /// report errors so cross-file references resolve now that every
+    /// dependency is registered.
+    /// </summary>
+    private static void ParseFiles(IReadOnlyList<InMemoryFile> files, CancellationToken cancellationToken)
+    {
         // pass 1: register every file's building blocks
         foreach (InMemoryFile file in files)
         {
@@ -326,6 +447,7 @@ public sealed class LspHandler
         bool isSystemVerilog = languageId.IndexOf("systemverilog", StringComparison.OrdinalIgnoreCase) >= 0;
 
         InMemoryProject project = GetOrCreateProjectForUri(uri);
+        _openUris.Add(uri);
         InMemoryFile file = project.AddOrUpdateFile(uri, UriToAbsolutePath(uri), text, isSystemVerilog);
         // parse eagerly so the first semantic-tokens / hover / definition
         // query already sees real-parser results (not the lightweight fallback)
@@ -356,13 +478,53 @@ public sealed class LspHandler
         PushDiagnostics(project, uri);
     }
 
+    /// <summary>
+    /// A closed document stays in the project: the RTL hierarchy view lists the
+    /// whole workspace, and dropping the file on didClose made the tree shrink
+    /// back to "only the files that happen to be open". The buffered text is
+    /// reloaded from disk so later queries see the saved version (the file may
+    /// also have been deleted, in which case it is removed).
+    /// </summary>
     private void HandleDidClose(JsonElement parameters, CancellationToken cancellationToken)
     {
         if (!parameters.TryGetProperty("textDocument", out var td)) return;
         if (!td.TryGetProperty("uri", out var uriProp)) return;
         string uri = uriProp.GetString() ?? string.Empty;
+        _openUris.Remove(uri);
+
         InMemoryProject project = GetOrCreateProjectForUri(uri);
-        project.RemoveFile(uri);
+        string? absolutePath = UriToAbsolutePath(uri);
+        if (absolutePath == null)
+        {
+            project.RemoveFile(uri);
+            return;
+        }
+
+        if (!File.Exists(absolutePath))
+        {
+            // deleted from disk while open: drop it from the tree
+            project.RemoveFile(uri);
+            return;
+        }
+
+        // re-read the saved content so the workspace view keeps the file with
+        // its on-disk text (cross-file resolution must not keep unsaved edits)
+        try
+        {
+            string text = File.ReadAllText(absolutePath);
+            string ext = Path.GetExtension(absolutePath);
+            bool isSystemVerilog = ext is ".sv" or ".svh";
+            InMemoryFile file = project.AddOrUpdateFile(uri, absolutePath, text, isSystemVerilog);
+            file.ForceBuild();
+        }
+        catch (IOException)
+        {
+            project.RemoveFile(uri);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            project.RemoveFile(uri);
+        }
     }
 
     /// <summary>
@@ -716,12 +878,22 @@ public sealed class LspHandler
     /// </para>
     ///
     /// <para>
-    /// Params: <c>{ "uri": "file:///...", "nodePath": [0,1,0] }</c>.
+    /// Params: <c>{ "uri": "file:///...", "nodePath": [0,1,0], "folderPath": "src/sub" }</c>.
     /// An empty / missing <c>nodePath</c> asks for the top level (the
-    /// workspace file/folder list). Each element of <c>nodePath</c> is an
+    /// workspace folder tree). Each element of <c>nodePath</c> is an
     /// index into the <c>children</c> array returned for its parent node, so
     /// the extension can expand the tree lazily: one request per expanded
     /// node, no need to serialise the whole hierarchy at once.
+    /// </para>
+    ///
+    /// <para>
+    /// The top level is the whole workspace (every .sv/.svh/.v/.vh file found
+    /// under the workspace roots), not just the documents the client happens
+    /// to have opened: folders are returned as
+    /// <see cref="HierarchyNodeKind.Folder"/> nodes so a large project stays
+    /// navigable. <c>folderPath</c> expands such a folder, and
+    /// <c>{ "rescan": true }</c> re-scans the workspace roots from disk
+    /// (picking up files created after initialize).
     /// </para>
     ///
     /// Response: <c>{ "nodes": [ RtlHierarchyNode, ... ] }</c>.
@@ -746,11 +918,31 @@ public sealed class LspHandler
             fileUri = uriElement.GetString();
         }
 
+        // folder of the node being expanded (top level / folder nodes)
+        string? folderPath = null;
+        if (parameters.TryGetProperty("folderPath", out var folderElement) && folderElement.ValueKind == JsonValueKind.String)
+        {
+            folderPath = folderElement.GetString();
+        }
+
         InMemoryProject project = _core.GetOrCreateProject("default");
+
+        // explicit rescan request (the extension's refresh command). Keeps the
+        // tree in sync with files added / removed on disk after initialize.
+        if (parameters.TryGetProperty("rescan", out var rescanElement) && rescanElement.ValueKind == JsonValueKind.True)
+        {
+            RescanWorkspaceFiles(project);
+        }
+
+        if (!string.IsNullOrEmpty(folderPath))
+        {
+            // expand a workspace folder
+            return new HierarchyResult { Nodes = BuildFolderNodes(project, folderPath) };
+        }
 
         if (nodePath.Count == 0 && string.IsNullOrEmpty(fileUri))
         {
-            // top level: workspace files
+            // top level: the whole workspace (folder tree + files)
             return new HierarchyResult { Nodes = BuildWorkspaceNodes(project) };
         }
 
@@ -763,29 +955,113 @@ public sealed class LspHandler
     }
 
     /// <summary>
-    /// Top level of the hierarchy view: every workspace SystemVerilog / Verilog
-    /// file, in path order (mirrors the editor's NavigatePanel project tree).
+    /// Top level of the hierarchy view: the whole workspace, i.e. every
+    /// SystemVerilog / Verilog file loaded from the workspace roots (not just
+    /// the documents the client opened). Folders come first, files after, both
+    /// sorted by name so the tree mirrors the on-disk project layout.
     /// </summary>
     private static List<HierarchyNode> BuildWorkspaceNodes(InMemoryProject project)
     {
-        List<HierarchyNode> nodes = new();
-        IEnumerable<InMemoryFile> files = project.Files
-            .OfType<InMemoryFile>()
-            .OrderBy(f => f.AbsolutePath ?? f.Id, StringComparer.OrdinalIgnoreCase);
+        return BuildFolderNodes(project, string.Empty);
+    }
 
-        foreach (InMemoryFile file in files)
+    /// <summary>
+    /// Children of one workspace folder: its sub-folders followed by the
+    /// SystemVerilog / Verilog files directly inside it. An empty
+    /// <paramref name="folderPath"/> lists the workspace roots themselves, so
+    /// the top level of the tree is the workspace as a whole.
+    /// </summary>
+    private static List<HierarchyNode> BuildFolderNodes(InMemoryProject project, string folderPath)
+    {
+        SortedSet<string> folders = new(StringComparer.OrdinalIgnoreCase);
+        List<HierarchyNode> fileNodes = new();
+
+        // Folders whose subtree contains a workspace root: they are expandable
+        // even when they only hold sub-folders.
+        SortedSet<string> nonEmptyFolders = new(StringComparer.OrdinalIgnoreCase);
+
+        foreach (InMemoryFile file in project.Files.OfType<InMemoryFile>())
         {
             string path = file.AbsolutePath ?? file.Id;
-            nodes.Add(new HierarchyNode
+            string? relative = GetRelativePath(project, path);
+            if (relative == null) continue;
+
+            // every ancestor folder of this file has content, so any of them is
+            // expandable when shown in its own parent level
+            for (string? ancestor = GetParentFolder(relative); ancestor != null; ancestor = GetParentFolder(ancestor))
+            {
+                if (!nonEmptyFolders.Add(ancestor)) break;
+            }
+
+            // register the folder directly below folderPath on this file's
+            // branch (deeper files contribute only their top-most folder, so a
+            // sub-folder is listed in its own parent, not at every level).
+            AddChildFolder(relative, folderPath, folders);
+
+            string? parent = GetParentFolder(relative);
+            if (!string.Equals(parent ?? string.Empty, folderPath, StringComparison.OrdinalIgnoreCase)) continue;
+
+            fileNodes.Add(new HierarchyNode
             {
                 Label = Path.GetFileName(path),
                 Uri = file.Id,
                 Kind = HierarchyNodeKind.File,
-                Detail = GetRelativePath(project, path),
+                Detail = relative,
                 HasChildren = file.GetHierarchyRootCount() > 0,
             });
         }
+
+        List<HierarchyNode> nodes = new();
+        foreach (string folder in folders)
+        {
+            string childPath = string.IsNullOrEmpty(folderPath) ? folder : folderPath + "/" + folder;
+            nodes.Add(new HierarchyNode
+            {
+                Label = folder,
+                Kind = HierarchyNodeKind.Folder,
+                FolderPath = childPath,
+                HasChildren = nonEmptyFolders.Contains(childPath),
+            });
+        }
+        fileNodes.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
+        nodes.AddRange(fileNodes);
         return nodes;
+    }
+
+    /// <summary>
+    /// Registers the single folder name that <paramref name="relativePath"/>
+    /// contributes to the listing of <paramref name="folderPath"/>: the path
+    /// segment directly below <paramref name="folderPath"/> on this file's
+    /// branch (so "src/rtl/x.sv" contributes "rtl" to the listing of "src", and
+    /// "src" to the listing of the workspace root).
+    ///
+    /// <para>
+    /// Files that do not live under <paramref name="folderPath"/> contribute
+    /// nothing: walking up without this prefix check made a file in
+    /// "src/rtl" advertise a bogus "src" child when the expanded folder was
+    /// "src/tb".
+    /// </para>
+    /// </summary>
+    private static void AddChildFolder(string relativePath, string folderPath, SortedSet<string> folders)
+    {
+        string prefix = string.IsNullOrEmpty(folderPath) ? string.Empty : folderPath + "/";
+        if (!relativePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) return;
+
+        string remainder = relativePath.Substring(prefix.Length);
+        int slash = remainder.IndexOf('/');
+        if (slash <= 0) return;   // the file sits directly in folderPath: no sub-folder
+
+        folders.Add(remainder.Substring(0, slash));
+    }
+
+    /// <summary>
+    /// Parent folder of a workspace-relative path in '/'-separated form, or
+    /// null when the path is directly under the workspace root.
+    /// </summary>
+    private static string? GetParentFolder(string relativePath)
+    {
+        int index = relativePath.LastIndexOf('/');
+        return index <= 0 ? null : relativePath.Substring(0, index);
     }
 
     /// <summary>

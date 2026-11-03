@@ -70,6 +70,7 @@ public sealed class LspHandler
 
         _notificationHandlers["initialized"] = HandleInitialized;
         _notificationHandlers["exit"] = HandleExit;
+        _notificationHandlers["workspace/didChangeWorkspaceFolders"] = HandleDidChangeWorkspaceFolders;
         _notificationHandlers["textDocument/didOpen"] = HandleDidOpen;
         _notificationHandlers["textDocument/didChange"] = HandleDidChange;
         _notificationHandlers["textDocument/didClose"] = HandleDidClose;
@@ -419,13 +420,64 @@ public sealed class LspHandler
     /// </summary>
     private static string PathToUri(string absolutePath)
     {
-        return new Uri(absolutePath).AbsoluteUri;
+        // A relative path (a synthetic test file, or a document the host never
+        // materialised on disk) cannot be turned into a file:// URI. Fall back
+        // to the raw string instead of throwing: the scan must never fail
+        // because of one odd entry.
+        try
+        {
+            return new Uri(absolutePath).AbsoluteUri;
+        }
+        catch (UriFormatException)
+        {
+            return absolutePath;
+        }
     }
 
     private object? HandleShutdown(JsonElement parameters, CancellationToken cancellationToken) => null;
 
     private void HandleInitialized(JsonElement parameters, CancellationToken cancellationToken)
     {
+    }
+
+    /// <summary>
+    /// The user added / removed a folder from the workspace. The RTL hierarchy
+    /// view mirrors the whole workspace, so the added roots are scanned into the
+    /// project and the removed ones dropped from it.
+    /// </summary>
+    private void HandleDidChangeWorkspaceFolders(JsonElement parameters, CancellationToken cancellationToken)
+    {
+        InMemoryProject project = _core.GetOrCreateProject("default");
+
+        if (parameters.TryGetProperty("event", out var eventElement)
+            && eventElement.TryGetProperty("added", out var added)
+            && added.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement folder in added.EnumerateArray())
+            {
+                if (!folder.TryGetProperty("uri", out var uri)) continue;
+                string? path = UriToAbsolutePath(uri.GetString());
+                if (string.IsNullOrEmpty(path)) continue;
+                if (!_workspaceRoots.Contains(path)) _workspaceRoots.Add(path);
+                if (!project.WorkspaceRoots.Contains(path)) project.WorkspaceRoots.Add(path);
+            }
+        }
+
+        if (parameters.TryGetProperty("event", out var removedEvent)
+            && removedEvent.TryGetProperty("removed", out var removed)
+            && removed.ValueKind == JsonValueKind.Array)
+        {
+            foreach (JsonElement folder in removed.EnumerateArray())
+            {
+                if (!folder.TryGetProperty("uri", out var uri)) continue;
+                string? path = UriToAbsolutePath(uri.GetString());
+                if (string.IsNullOrEmpty(path)) continue;
+                _workspaceRoots.Remove(path);
+                project.WorkspaceRoots.Remove(path);
+            }
+        }
+
+        RescanWorkspaceFiles(project);
     }
 
     private void HandleExit(JsonElement parameters, CancellationToken cancellationToken)
@@ -449,10 +501,102 @@ public sealed class LspHandler
         InMemoryProject project = GetOrCreateProjectForUri(uri);
         _openUris.Add(uri);
         InMemoryFile file = project.AddOrUpdateFile(uri, UriToAbsolutePath(uri), text, isSystemVerilog);
+        // When the client opened a single file without a workspace folder
+        // (no rootUri / workspaceFolders in initialize), adopt the file's
+        // directory as a workspace root. Otherwise the RTL hierarchy can only
+        // ever show the documents the client happens to have open.
+        EnsureWorkspaceRootFromFile(uri, project);
         // parse eagerly so the first semantic-tokens / hover / definition
         // query already sees real-parser results (not the lightweight fallback)
         file.ForceBuild();
         PushDiagnostics(project, uri);
+    }
+
+    /// <summary>
+    /// Fallback for clients that open a single file without opening a folder:
+    /// in that case initialize carries neither <c>rootUri</c> nor
+    /// <c>workspaceFolders</c>, so the workspace scan in
+    /// <see cref="LoadWorkspaceFiles"/> has no root to walk and the hierarchy
+    /// tree ends up listing only the opened document.
+    ///
+    /// <para>
+    /// The directory of the first opened file is adopted as the workspace root,
+    /// walking up to the enclosing project directory when one can be recognised
+    /// (a <c>.git</c> / <c>.svn</c> / <c>.hg</c> entry, a solution / workspace
+    /// file). The user who opened <c>src/rtl/top.sv</c> directly expects the
+    /// whole project tree, not just <c>src/rtl</c>. Runs at most once; later
+    /// opens already have a root.
+    /// </para>
+    /// </summary>
+    private void EnsureWorkspaceRootFromFile(string uri, InMemoryProject project)
+    {
+        if (_workspaceRoots.Count > 0) return;
+
+        string? absolutePath = UriToAbsolutePath(uri);
+        if (string.IsNullOrEmpty(absolutePath)) return;
+        // only a document backed by a real file on disk can tell us where the
+        // project lives (an untitled buffer has no directory to scan)
+        if (!File.Exists(absolutePath)) return;
+        string? directory = Path.GetDirectoryName(absolutePath);
+        if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory)) return;
+
+        directory = FindProjectRoot(directory);
+        _workspaceRoots.Add(directory);
+        if (!project.WorkspaceRoots.Contains(directory)) project.WorkspaceRoots.Add(directory);
+
+        List<InMemoryFile> added = ScanWorkspaceFiles(project, CancellationToken.None);
+        ParseFiles(added, CancellationToken.None);
+        Console.Error.WriteLine($"workspace root inferred from opened file: {directory} ({added.Count} files)");
+    }
+
+    /// <summary>
+    /// Walks up from <paramref name="startDirectory"/> looking for a directory
+    /// that looks like a project root (version control metadata, a solution /
+    /// workspace file, or a project file). Returns the nearest such directory,
+    /// or <paramref name="startDirectory"/> when none is found. The climb is
+    /// bounded so a stray source file at the drive root never scans the whole
+    /// disk.
+    /// </summary>
+    private static string FindProjectRoot(string startDirectory)
+    {
+        static bool IsProjectRoot(string dir)
+        {
+            try
+            {
+                if (Directory.Exists(Path.Combine(dir, ".git"))
+                    || Directory.Exists(Path.Combine(dir, ".svn"))
+                    || Directory.Exists(Path.Combine(dir, ".hg")))
+                {
+                    return true;
+                }
+
+                foreach (string pattern in new[] { "*.sln", "*.slnx", "*.code-workspace", "*.csproj", "*.f" })
+                {
+                    if (Directory.EnumerateFiles(dir, pattern).Any()) return true;
+                }
+            }
+            catch (IOException)
+            {
+                // unreadable directory: treat as "not a project root"
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // unreadable directory: treat as "not a project root"
+            }
+            return false;
+        }
+
+        string current = startDirectory;
+        // bounded climb: at most 8 levels above the file's directory
+        for (int depth = 0; depth < 8; depth++)
+        {
+            if (IsProjectRoot(current)) return current;
+
+            string? parent = Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(parent) || string.Equals(parent, current, StringComparison.Ordinal)) break;
+            current = parent;
+        }
+        return startDirectory;
     }
 
     private void HandleDidChange(JsonElement parameters, CancellationToken cancellationToken)

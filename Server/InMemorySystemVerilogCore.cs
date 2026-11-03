@@ -83,6 +83,28 @@ internal sealed class InMemoryProject : ISystemVerilogProject
     /// </summary>
     internal List<string> WorkspaceRoots { get; } = new();
 
+    /// <summary>
+    /// Plugin-side item tree registration, keyed by project-relative path.
+    ///
+    /// <para>
+    /// The plugin resolves <c>`include</c> targets exclusively through the
+    /// plugin <see cref="CodeEditor2.Data.Project"/>'s item tree
+    /// (<c>Project.FindItems</c> / <c>Project.SearchFile</c> /
+    /// <c>Project.GetItem</c>, see <c>WordScanner.parseInclude</c> and
+    /// <c>VerilogHeaderInstance.Create</c>). The LSP host never builds that
+    /// tree — it only keeps <see cref="InMemoryFile"/> entries — so every
+    /// <c>`include</c> reported "file not found" even though the target had
+    /// been loaded from disk. The editor builds the tree in
+    /// <c>Folder.UpdateAsync</c>, which is why the same project resolves
+    /// includes correctly in RtlEditor.
+    /// </para>
+    /// </summary>
+    private readonly Dictionary<string, CodeEditor2.Data.TextFile> _pluginItems =
+        new(StringComparer.Ordinal);
+
+    /// <summary>Guards <see cref="_pluginItems"/> and the plugin item tree.</summary>
+    private readonly object _pluginItemLock = new();
+
     public InMemoryProject(string id)
     {
         Id = id;
@@ -129,7 +151,189 @@ internal sealed class InMemoryProject : ISystemVerilogProject
         InMemoryFile file = new(id, absolutePath, isSystemVerilog, text);
         file.ProjectOwner = this;
         _files[id] = file;
+        // keep the plugin item tree in sync: `include resolution goes through
+        // it (see RegisterPluginItem)
+        RegisterPluginItem(file);
         return file;
+    }
+
+    /// <summary>
+    /// Converts an absolute path into the project-relative path the plugin
+    /// item tree is keyed by (workspace-relative, '/' separated). Returns null
+    /// when the path is not under any workspace root (an untitled buffer, or a
+    /// file opened before a root was known).
+    /// </summary>
+    internal string? GetProjectRelativePath(string? absolutePath)
+    {
+        if (string.IsNullOrEmpty(absolutePath)) return null;
+
+        foreach (string root in WorkspaceRoots)
+        {
+            string normalizedRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                                    + Path.DirectorySeparatorChar;
+            if (absolutePath.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                return absolutePath.Substring(normalizedRoot.Length).Replace('\\', '/');
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Registers (or refreshes) the plugin-side item tree entry for
+    /// <paramref name="file"/>.
+    ///
+    /// <para>
+    /// <c>WordScanner.parseInclude</c> resolves an include target only through
+    /// the plugin <see cref="CodeEditor2.Data.Project"/> item tree
+    /// (<c>FindItems</c> / <c>SearchFile</c>) and
+    /// <c>VerilogHeaderInstance.Create</c> only through
+    /// <c>Project.GetItem</c>. The LSP host keeps its own
+    /// <see cref="InMemoryFile"/> table and never built that tree, so every
+    /// <c>`include</c> reported "file not found" although the target had been
+    /// loaded from disk. The editor builds the tree in
+    /// <c>Folder.UpdateAsync</c>, which is why the same project resolves
+    /// includes in RtlEditor.
+    /// </para>
+    ///
+    /// <para>
+    /// The tree is keyed by the workspace-relative path with '/' separators
+    /// (the form <c>parseInclude</c> compares against after normalising
+    /// backslashes). <c>Item.GetItem</c> accepts both separators, so the
+    /// lookup works on Windows and Linux alike.
+    /// </para>
+    /// </summary>
+    internal void RegisterPluginItem(InMemoryFile file)
+    {
+        string? relativePath = GetProjectRelativePath(file.AbsolutePath);
+        if (string.IsNullOrEmpty(relativePath)) return;
+
+        lock (_pluginItemLock)
+        {
+            CodeEditor2.Data.TextFile textFile = GetOrCreatePluginItem(relativePath, file.IsSystemVerilog);
+            SetPluginItemText(textFile, file.CodeDocumentText);
+        }
+    }
+
+    /// <summary>
+    /// Re-registers every known file after the workspace roots changed (a root
+    /// inferred from an opened file, or a folder added to the workspace). The
+    /// relative path of a file depends on the root, so entries registered
+    /// before the root was known must be re-keyed.
+    /// </summary>
+    internal void RebuildPluginItemTree()
+    {
+        lock (_pluginItemLock)
+        {
+            foreach (InMemoryFile file in _files.Values)
+            {
+                RegisterPluginItem(file);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Returns the plugin item for <paramref name="relativePath"/>, creating
+    /// the intermediate folders and the file item on first use. The item type
+    /// must be a <see cref="pluginVerilog.Data.VerilogFile"/> /
+    /// <see cref="pluginVerilog.Data.VerilogHeaderFile"/>: the include parse
+    /// snapshots the item's <c>CodeDocument</c> and requires
+    /// <c>TextFile as IVerilogRelatedFile</c> to be non-null.
+    /// </summary>
+    private CodeEditor2.Data.TextFile GetOrCreatePluginItem(string relativePath, bool isSystemVerilog)
+    {
+        if (_pluginItems.TryGetValue(relativePath, out CodeEditor2.Data.TextFile? existing))
+        {
+            return existing;
+        }
+
+        string name = relativePath;
+        string directory = string.Empty;
+        int slash = relativePath.LastIndexOf('/');
+        if (slash >= 0)
+        {
+            name = relativePath.Substring(slash + 1);
+            directory = relativePath.Substring(0, slash);
+        }
+
+        CodeEditor2.Data.Folder parent = EnsurePluginFolder(directory);
+
+        CodeEditor2.Data.TextFile item;
+        if (name.EndsWith(".svh", StringComparison.OrdinalIgnoreCase)
+            || name.EndsWith(".vh", StringComparison.OrdinalIgnoreCase))
+        {
+            item = new pluginVerilog.Data.VerilogHeaderFile
+            {
+                Name = name,
+                Project = PluginProject,
+                RelativePath = relativePath,
+            };
+        }
+        else
+        {
+            item = new pluginVerilog.Data.VerilogFile
+            {
+                Name = name,
+                Project = PluginProject,
+                RelativePath = relativePath,
+                SystemVerilog = isSystemVerilog,
+            };
+        }
+
+        parent.Items.AddOrUpdate(name, item);
+        _pluginItems[relativePath] = item;
+        return item;
+    }
+
+    /// <summary>
+    /// Creates the intermediate folders for a workspace-relative directory
+    /// ("a/b/c") under the plugin project and returns the deepest one.
+    /// </summary>
+    private CodeEditor2.Data.Folder EnsurePluginFolder(string directoryRelative)
+    {
+        if (string.IsNullOrEmpty(directoryRelative)) return PluginProject;
+
+        CodeEditor2.Data.Item current = PluginProject;
+        string accumulated = string.Empty;
+        foreach (string part in directoryRelative.Split('/'))
+        {
+            if (part.Length == 0) continue;
+            accumulated = accumulated.Length == 0 ? part : accumulated + "/" + part;
+
+            if (current.Items.TryGetValue(part, out CodeEditor2.Data.Item? found) && found != null)
+            {
+                current = found;
+                continue;
+            }
+
+            // Folder.Create derives Name from the platform separator, so pass
+            // the accumulated path with that separator while keeping the item
+            // key (and RelativePath) in the '/' form the include lookup uses.
+            CodeEditor2.Data.Folder folder = CodeEditor2.Data.Folder.Create(
+                accumulated.Replace('/', Path.DirectorySeparatorChar), PluginProject, current);
+            current.Items.AddOrUpdate(part, folder);
+            current = folder;
+        }
+        return (CodeEditor2.Data.Folder)current;
+    }
+
+    /// <summary>
+    /// Assigns the text to the plugin item's <c>CodeDocument</c>. The setter is
+    /// not public in a UI-less host (FileCheckAsync is UI dependent), so
+    /// reflection is used — the same approach as
+    /// <c>CoreBridge.ParseEngine</c> / the sv-tests harness.
+    /// </summary>
+    private static void SetPluginItemText(CodeEditor2.Data.TextFile textFile, string text)
+    {
+        pluginVerilog.CodeEditor.CodeDocument document =
+            new pluginVerilog.CodeEditor.CodeDocument(text);
+
+        System.Reflection.PropertyInfo? property = typeof(CodeEditor2.Data.TextFile).GetProperty(
+            "CodeDocument",
+            System.Reflection.BindingFlags.Instance
+            | System.Reflection.BindingFlags.Public
+            | System.Reflection.BindingFlags.NonPublic);
+        property?.SetValue(textFile, document);
     }
 
     /// <summary>
@@ -167,7 +371,27 @@ internal sealed class InMemoryProject : ISystemVerilogProject
 
     public void RemoveFile(string id)
     {
-        _files.TryRemove(id, out _);
+        if (_files.TryRemove(id, out InMemoryFile? removed))
+        {
+            RemovePluginItem(removed);
+        }
+    }
+
+    /// <summary>
+    /// Drops the plugin item tree entry of a file that left the project, so a
+    /// later <c>`include</c> does not resolve to a stale item.
+    /// </summary>
+    private void RemovePluginItem(InMemoryFile file)
+    {
+        string? relativePath = GetProjectRelativePath(file.AbsolutePath);
+        if (string.IsNullOrEmpty(relativePath)) return;
+
+        lock (_pluginItemLock)
+        {
+            if (!_pluginItems.TryGetValue(relativePath, out CodeEditor2.Data.TextFile? item)) return;
+            _pluginItems.Remove(relativePath);
+            item.Parent?.Items.TryRemove(item.Name);
+        }
     }
 
     public ISystemVerilogDocument? GetDocument(ISystemVerilogFile file)
@@ -639,11 +863,20 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             ?? throw new InvalidOperationException(
                 "InMemoryFile must be created through InMemoryProject.AddOrUpdateFile");
 
+        // RelativePath must be the workspace-relative path, not the document
+        // URI: WordScanner.parseInclude derives the include target's
+        // same-folder path from the including file's RelativePath and compares
+        // it against the plugin item tree's RelativePath values. With a URI
+        // ("file:///d%3A/...") the same-folder lookup never matched and only
+        // the project-wide name fallback could resolve an include (which picks
+        // the wrong file when two folders hold the same header name).
+        string relativePath = ProjectOwner?.GetProjectRelativePath(AbsolutePath) ?? Id;
+
         pluginVerilog.Data.VerilogFile file = new pluginVerilog.Data.VerilogFile()
         {
-            Name = System.IO.Path.GetFileName(Id),
+            Name = System.IO.Path.GetFileName(relativePath),
             Project = project,
-            RelativePath = Id,
+            RelativePath = relativePath,
         };
         file.SystemVerilog = IsSystemVerilog;
         return file;

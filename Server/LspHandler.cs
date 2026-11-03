@@ -215,6 +215,12 @@ public sealed class LspHandler
             if (!project.WorkspaceRoots.Contains(root)) project.WorkspaceRoots.Add(root);
         }
 
+        // The plugin item tree is keyed by the workspace-relative path, so it
+        // can only be built once the roots are known. `include resolution goes
+        // through that tree (WordScanner.parseInclude), so without it every
+        // include reports "file not found" in the LSP host.
+        project.RebuildPluginItemTree();
+
         // initialize must answer immediately: reading and parsing every source
         // file of a large workspace (this repository has >1000 .sv files under
         // verilog_sample/sv_tests) blocked the initialize response for minutes,
@@ -582,6 +588,9 @@ public sealed class LspHandler
             }
         }
 
+        // the relative path of every known file depends on the roots, so the
+        // plugin item tree (used by `include resolution) must be re-keyed
+        project.RebuildPluginItemTree();
         RescanWorkspaceFiles(project);
     }
 
@@ -649,6 +658,11 @@ public sealed class LspHandler
         _workspaceRoots.Add(directory);
         if (!project.WorkspaceRoots.Contains(directory)) project.WorkspaceRoots.Add(directory);
 
+        // the root was unknown when the file was registered, so its plugin item
+        // entry (if any) was keyed by the URI; re-key the whole tree now that
+        // the workspace-relative paths can be computed
+        project.RebuildPluginItemTree();
+
         // Deliberately no scan / parse here. The hierarchy tree is built from
         // the directory listing, and parsing every source file of a large
         // project synchronously on didOpen would block the rtl/hierarchy
@@ -680,6 +694,7 @@ public sealed class LspHandler
             directory = FindProjectRoot(directory);
             if (!_workspaceRoots.Contains(directory)) _workspaceRoots.Add(directory);
             if (!project.WorkspaceRoots.Contains(directory)) project.WorkspaceRoots.Add(directory);
+            project.RebuildPluginItemTree();
 
             // no eager scan / parse: the tree is built from the directory
             // listing and files are parsed lazily when expanded

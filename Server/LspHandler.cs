@@ -103,7 +103,18 @@ public sealed class LspHandler
     private object? HandleInitialize(JsonElement parameters, CancellationToken cancellationToken)
     {
         CollectWorkspaceRoots(parameters);
-        LoadWorkspaceFiles(cancellationToken);
+        // A failure while preparing the workspace must never fail the
+        // initialize handshake: the client would drop the session and the RTL
+        // hierarchy view would stay empty forever. Answer with capabilities and
+        // degrade gracefully instead.
+        try
+        {
+            LoadWorkspaceFiles(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"workspace preparation failed: {ex}");
+        }
         return new InitializeResult
         {
             Capabilities = new ServerCapabilities
@@ -145,15 +156,15 @@ public sealed class LspHandler
     /// </summary>
     private void CollectWorkspaceRoots(JsonElement parameters)
     {
+        // rootUri, rootPath and workspaceFolders usually carry the same folder;
+        // adding it three times would list every root three times in the tree.
         if (parameters.TryGetProperty("rootUri", out var rootUri) && rootUri.ValueKind == JsonValueKind.String)
         {
-            string? path = UriToAbsolutePath(rootUri.GetString());
-            if (!string.IsNullOrEmpty(path)) _workspaceRoots.Add(path);
+            AddWorkspaceRoot(rootUri.GetString());
         }
         if (parameters.TryGetProperty("rootPath", out var rootPath) && rootPath.ValueKind == JsonValueKind.String)
         {
-            string? path = UriToAbsolutePath(rootPath.GetString());
-            if (!string.IsNullOrEmpty(path)) _workspaceRoots.Add(path);
+            AddWorkspaceRoot(rootPath.GetString());
         }
         if (parameters.TryGetProperty("workspaceFolders", out var folders) && folders.ValueKind == JsonValueKind.Array)
         {
@@ -161,11 +172,31 @@ public sealed class LspHandler
             {
                 if (folder.TryGetProperty("uri", out var uri) && uri.ValueKind == JsonValueKind.String)
                 {
-                    string? path = UriToAbsolutePath(uri.GetString());
-                    if (!string.IsNullOrEmpty(path)) _workspaceRoots.Add(path);
+                    AddWorkspaceRoot(uri.GetString());
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Registers a workspace root once. Duplicates are ignored so a client that
+    /// reports the same folder via <c>rootUri</c> and <c>workspaceFolders</c>
+    /// does not produce a repeated entry in the tree.
+    /// </summary>
+    private void AddWorkspaceRoot(string? uriOrPath)
+    {
+        string? path = UriToAbsolutePath(uriOrPath);
+        if (string.IsNullOrEmpty(path)) return;
+
+        string normalized = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrEmpty(normalized)) return;
+
+        foreach (string existing in _workspaceRoots)
+        {
+            string trimmed = existing.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(trimmed, normalized, StringComparison.OrdinalIgnoreCase)) return;
+        }
+        _workspaceRoots.Add(normalized);
     }
 
     /// <summary>
@@ -184,9 +215,50 @@ public sealed class LspHandler
             if (!project.WorkspaceRoots.Contains(root)) project.WorkspaceRoots.Add(root);
         }
 
-        ScanWorkspaceFiles(project, cancellationToken);
-        ParseWorkspaceFiles(project, cancellationToken);
+        // initialize must answer immediately: reading and parsing every source
+        // file of a large workspace (this repository has >1000 .sv files under
+        // verilog_sample/sv_tests) blocked the initialize response for minutes,
+        // so the client never got a session and the RTL hierarchy view stayed
+        // empty. The scan + parse therefore runs in the background; the
+        // hierarchy tree itself is built from the directory listing and a
+        // source file is parsed lazily when it is expanded.
+        Console.Error.WriteLine($"workspace roots: {string.Join(", ", _workspaceRoots)}");
+        if (_workspaceRoots.Count == 0) return;
+
+        // Listing the files is cheap; parsing them is not. For a small project
+        // the parse also runs here so cross-file references resolve immediately.
+        // A large workspace (thousands of sources) is parsed in the background
+        // instead: blocking initialize for minutes is what left the hierarchy
+        // view empty, and each file is parsed lazily on expansion anyway.
+        List<InMemoryFile> added = ScanWorkspaceFiles(project, CancellationToken.None);
+        if (added.Count <= MaxEagerParseFiles)
+        {
+            ParseFiles(added, CancellationToken.None);
+            return;
+        }
+
+        Console.Error.WriteLine(
+            $"workspace: {added.Count} files, parsing in background (eager threshold {MaxEagerParseFiles})");
+        Task.Run(() =>
+        {
+            try
+            {
+                ParseFiles(added, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"background workspace parse failed: {ex.Message}");
+            }
+        });
     }
+
+    /// <summary>
+    /// Up to this many workspace files are parsed synchronously at initialize
+    /// (keeps cross-file resolution and diagnostics for normal projects). A
+    /// larger workspace is parsed in the background so the initialize handshake
+    /// stays fast.
+    /// </summary>
+    private const int MaxEagerParseFiles = 200;
 
     /// <summary>
     /// Re-reads the workspace roots from disk so the RTL hierarchy tree shows

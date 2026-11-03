@@ -98,6 +98,10 @@ internal static class Program
                 }
                 catch (Exception ex)
                 {
+                    // Log the full stack: the client only sees the message, and a
+                    // silent internal error (e.g. in initialize) leaves the whole
+                    // extension without a session (the tree view stays empty).
+                    Console.Error.WriteLine($"error handling {message.Method}: {ex}");
                     if (isRequest)
                     {
                         await WriteErrorAsync(writer, message.Id, -32603, $"Internal error: {ex.Message}", cts.Token);

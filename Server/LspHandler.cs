@@ -195,7 +195,12 @@ public sealed class LspHandler
     /// </summary>
     private void RescanWorkspaceFiles(InMemoryProject project)
     {
+        // no root reported yet (single file opened, no folder): infer one from
+        // the documents the project already knows so a refresh still fills in
+        // the rest of the workspace instead of doing nothing
+        if (_workspaceRoots.Count == 0) EnsureWorkspaceRootFromKnownFiles(project);
         if (_workspaceRoots.Count == 0) return;
+
         List<InMemoryFile> added = ScanWorkspaceFiles(project, CancellationToken.None);
         // only the files that actually appeared / changed need parsing; the
         // rest keep the parse result from the previous scan
@@ -547,6 +552,37 @@ public sealed class LspHandler
         List<InMemoryFile> added = ScanWorkspaceFiles(project, CancellationToken.None);
         ParseFiles(added, CancellationToken.None);
         Console.Error.WriteLine($"workspace root inferred from opened file: {directory} ({added.Count} files)");
+    }
+
+    /// <summary>
+    /// Self-healing variant of <see cref="EnsureWorkspaceRootFromFile"/> used by
+    /// the hierarchy request: when the client never sent a workspace root, take
+    /// the directory of any document the project already knows about, walk up to
+    /// the enclosing project directory and scan it. This covers the case where
+    /// the document was opened before this feature existed (the didOpen hook was
+    /// not there yet) and no rescan can be triggered from the client.
+    /// </summary>
+    private void EnsureWorkspaceRootFromKnownFiles(InMemoryProject project)
+    {
+        foreach (ISystemVerilogFile f in project.Files)
+        {
+            if (f is not InMemoryFile file) continue;
+            string? path = file.AbsolutePath;
+            if (string.IsNullOrEmpty(path)) continue;
+            if (!File.Exists(path)) continue;
+
+            string? directory = Path.GetDirectoryName(path);
+            if (string.IsNullOrEmpty(directory) || !Directory.Exists(directory)) continue;
+
+            directory = FindProjectRoot(directory);
+            if (!_workspaceRoots.Contains(directory)) _workspaceRoots.Add(directory);
+            if (!project.WorkspaceRoots.Contains(directory)) project.WorkspaceRoots.Add(directory);
+
+            List<InMemoryFile> added = ScanWorkspaceFiles(project, CancellationToken.None);
+            ParseFiles(added, CancellationToken.None);
+            Console.Error.WriteLine($"workspace root inferred from known file: {directory} ({added.Count} files)");
+            return;
+        }
     }
 
     /// <summary>
@@ -1078,6 +1114,17 @@ public sealed class LspHandler
             RescanWorkspaceFiles(project);
         }
 
+        // Self-heal the top level: when the client never reported a workspace
+        // root (single file opened, "File > Open File"), the scan at initialize
+        // never ran and the tree would only ever list the open documents. The
+        // directory of any known document is a good enough root to scan once so
+        // the whole project appears.
+        if (nodePath.Count == 0 && string.IsNullOrEmpty(fileUri) && string.IsNullOrEmpty(folderPath)
+            && _workspaceRoots.Count == 0)
+        {
+            EnsureWorkspaceRootFromKnownFiles(project);
+        }
+
         if (!string.IsNullOrEmpty(folderPath))
         {
             // expand a workspace folder
@@ -1104,7 +1151,7 @@ public sealed class LspHandler
     /// the documents the client opened). Folders come first, files after, both
     /// sorted by name so the tree mirrors the on-disk project layout.
     /// </summary>
-    private static List<HierarchyNode> BuildWorkspaceNodes(InMemoryProject project)
+    private List<HierarchyNode> BuildWorkspaceNodes(InMemoryProject project)
     {
         return BuildFolderNodes(project, string.Empty);
     }
@@ -1115,62 +1162,146 @@ public sealed class LspHandler
     /// <paramref name="folderPath"/> lists the workspace roots themselves, so
     /// the top level of the tree is the workspace as a whole.
     /// </summary>
-    private static List<HierarchyNode> BuildFolderNodes(InMemoryProject project, string folderPath)
+    private List<HierarchyNode> BuildFolderNodes(InMemoryProject project, string folderPath)
     {
-        SortedSet<string> folders = new(StringComparer.OrdinalIgnoreCase);
-        List<HierarchyNode> fileNodes = new();
-
-        // Folders whose subtree contains a workspace root: they are expandable
-        // even when they only hold sub-folders.
-        SortedSet<string> nonEmptyFolders = new(StringComparer.OrdinalIgnoreCase);
-
-        foreach (InMemoryFile file in project.Files.OfType<InMemoryFile>())
+        // Top level: mirror the project layout the way RtlEditor2's NavigateView
+        // does. With a single workspace root its children are listed directly;
+        // with several roots each root becomes a folder node.
+        if (string.IsNullOrEmpty(folderPath))
         {
-            string path = file.AbsolutePath ?? file.Id;
-            string? relative = GetRelativePath(project, path);
-            if (relative == null) continue;
-
-            // every ancestor folder of this file has content, so any of them is
-            // expandable when shown in its own parent level
-            for (string? ancestor = GetParentFolder(relative); ancestor != null; ancestor = GetParentFolder(ancestor))
+            if (project.WorkspaceRoots.Count == 0) return new List<HierarchyNode>();
+            if (project.WorkspaceRoots.Count == 1)
             {
-                if (!nonEmptyFolders.Add(ancestor)) break;
+                return BuildDirectoryNodes(project, project.WorkspaceRoots[0], string.Empty);
             }
 
-            // register the folder directly below folderPath on this file's
-            // branch (deeper files contribute only their top-most folder, so a
-            // sub-folder is listed in its own parent, not at every level).
-            AddChildFolder(relative, folderPath, folders);
-
-            string? parent = GetParentFolder(relative);
-            if (!string.Equals(parent ?? string.Empty, folderPath, StringComparison.OrdinalIgnoreCase)) continue;
-
-            fileNodes.Add(new HierarchyNode
+            List<HierarchyNode> roots = new();
+            foreach (string root in project.WorkspaceRoots)
             {
-                Label = Path.GetFileName(path),
-                Uri = file.Id,
-                Kind = HierarchyNodeKind.File,
-                Detail = relative,
-                HasChildren = file.GetHierarchyRootCount() > 0,
-            });
+                string trimmed = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                roots.Add(new HierarchyNode
+                {
+                    Label = Path.GetFileName(trimmed),
+                    Kind = HierarchyNodeKind.Folder,
+                    FolderPath = root,
+                    HasChildren = true,
+                });
+            }
+            roots.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
+            return roots;
         }
 
-        List<HierarchyNode> nodes = new();
-        foreach (string folder in folders)
+        string? directory = ResolveFolderDirectory(project, folderPath);
+        if (directory == null) return new List<HierarchyNode>();
+
+        // a relative folderPath is resolved against the single workspace root,
+        // so its children stay relative; an absolute one (multi-root listing)
+        // keeps absolute child paths
+        string basePath = Path.IsPathRooted(folderPath) ? folderPath : folderPath;
+        return BuildDirectoryNodes(project, directory, basePath);
+    }
+
+    /// <summary>
+    /// Maps a <c>folderPath</c> from the tree back to an absolute directory.
+    /// Accepts both a workspace-relative path (single root) and an absolute
+    /// path (a root node when several roots are open).
+    /// </summary>
+    private static string? ResolveFolderDirectory(InMemoryProject project, string folderPath)
+    {
+        if (Path.IsPathRooted(folderPath))
         {
-            string childPath = string.IsNullOrEmpty(folderPath) ? folder : folderPath + "/" + folder;
+            return Directory.Exists(folderPath) ? folderPath : null;
+        }
+
+        foreach (string root in project.WorkspaceRoots)
+        {
+            string candidate = Path.Combine(root, folderPath.Replace('/', Path.DirectorySeparatorChar));
+            if (Directory.Exists(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Lists the real contents of <paramref name="directory"/>: every
+    /// sub-directory and every file, exactly like RtlEditor2's NavigateView
+    /// (not only the SystemVerilog sources). Build output / VCS directories are
+    /// skipped. A SystemVerilog / Verilog file that the server has parsed is
+    /// expandable into its instance hierarchy; other files are leaves that open
+    /// in the editor.
+    /// </summary>
+    private List<HierarchyNode> BuildDirectoryNodes(InMemoryProject project, string directory, string basePath)
+    {
+        List<HierarchyNode> nodes = new();
+
+        IEnumerable<string> subDirectories;
+        IEnumerable<string> files;
+        try
+        {
+            subDirectories = Directory.EnumerateDirectories(directory);
+            files = Directory.EnumerateFiles(directory);
+        }
+        catch (IOException)
+        {
+            return nodes;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return nodes;
+        }
+
+        foreach (string sub in subDirectories)
+        {
+            string name = Path.GetFileName(sub);
+            if (SkippedDirectoryNames.Contains(name)) continue;
+
             nodes.Add(new HierarchyNode
             {
-                Label = folder,
+                Label = name,
                 Kind = HierarchyNodeKind.Folder,
-                FolderPath = childPath,
-                HasChildren = nonEmptyFolders.Contains(childPath),
+                FolderPath = string.IsNullOrEmpty(basePath) ? name : basePath + "/" + name,
+                HasChildren = true,
             });
         }
-        fileNodes.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
-        nodes.AddRange(fileNodes);
+
+        foreach (string path in files)
+        {
+            string name = Path.GetFileName(path);
+            string uri = PathToUri(path);
+            bool hasChildren = false;
+
+            if (project.FindFile(uri) is InMemoryFile known)
+            {
+                hasChildren = known.GetHierarchyRootCount() > 0;
+            }
+
+            nodes.Add(new HierarchyNode
+            {
+                Label = name,
+                Uri = uri,
+                Kind = HierarchyNodeKind.File,
+                Detail = GetRelativePath(project, path) ?? name,
+                HasChildren = hasChildren,
+            });
+        }
+
+        nodes.Sort((a, b) =>
+        {
+            // folders first, then files, each alphabetically
+            bool aFolder = a.Kind == HierarchyNodeKind.Folder;
+            bool bFolder = b.Kind == HierarchyNodeKind.Folder;
+            if (aFolder != bFolder) return aFolder ? -1 : 1;
+            return string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase);
+        });
         return nodes;
     }
+
+    /// <summary>
+    /// Directory names whose contents are build output / VCS metadata and are
+    /// never shown in the tree.
+    /// </summary>
+    private static readonly HashSet<string> SkippedDirectoryNames =
+        new(StringComparer.OrdinalIgnoreCase)
+        { "obj", "bin", "publish", "node_modules", ".git", ".svn", ".hg" };
 
     /// <summary>
     /// Registers the single folder name that <paramref name="relativePath"/>

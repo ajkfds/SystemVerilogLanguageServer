@@ -475,21 +475,48 @@ public sealed class LspHandler
     private static string? UriToAbsolutePath(string? uri)
     {
         if (string.IsNullOrEmpty(uri)) return null;
-        if (uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+        if (!uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
         {
-            try
+            // already a plain path (rootPath, a synthetic test id, ...)
+            return uri;
+        }
+
+        string path;
+        try
+        {
+            Uri u = new Uri(uri);
+            path = u.LocalPath;
+        }
+        catch (UriFormatException)
+        {
+            return null;
+        }
+
+        // VS Code sends the drive-letter colon percent-encoded and the drive
+        // letter lower-case (file:///d%3A/Document/x). Uri.LocalPath then keeps
+        // the escape / yields a "/d:/Document/x" style path, which does not
+        // exist on Windows: the workspace scan found 0 files and the RTL
+        // hierarchy tree stayed empty. Decode and normalise to a real path.
+        if (path.IndexOf('%') >= 0)
+        {
+            path = Uri.UnescapeDataString(path);
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            // "/d:/Document/x" -> "d:/Document/x"
+            if (path.Length >= 3 && path[0] == '/' && char.IsLetter(path[1]) && path[2] == ':')
             {
-                // Uri handles drive letters, percent escapes and forward
-                // slashes uniformly on both Windows and Unix.
-                Uri u = new Uri(uri);
-                return u.LocalPath;
+                path = path.Substring(1);
             }
-            catch (UriFormatException)
+            if (path.Length >= 2 && char.IsLetter(path[0]) && path[1] == ':')
             {
-                return null;
+                path = char.ToUpperInvariant(path[0]) + path.Substring(1);
+                path = path.Replace('/', '\\');
             }
         }
-        return uri;
+
+        return path;
     }
 
     /// <summary>

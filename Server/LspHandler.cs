@@ -201,10 +201,11 @@ public sealed class LspHandler
         if (_workspaceRoots.Count == 0) EnsureWorkspaceRootFromKnownFiles(project);
         if (_workspaceRoots.Count == 0) return;
 
-        List<InMemoryFile> added = ScanWorkspaceFiles(project, CancellationToken.None);
-        // only the files that actually appeared / changed need parsing; the
-        // rest keep the parse result from the previous scan
-        ParseFiles(added, CancellationToken.None);
+        // Only refresh the list of known files here. The hierarchy tree is
+        // built from the directory listing, so a rescan must stay cheap: parsing
+        // the whole workspace on a refresh made the request time out on large
+        // projects. Newly discovered files are parsed lazily when expanded.
+        ScanWorkspaceFiles(project, CancellationToken.None);
     }
 
     /// <summary>
@@ -549,9 +550,12 @@ public sealed class LspHandler
         _workspaceRoots.Add(directory);
         if (!project.WorkspaceRoots.Contains(directory)) project.WorkspaceRoots.Add(directory);
 
-        List<InMemoryFile> added = ScanWorkspaceFiles(project, CancellationToken.None);
-        ParseFiles(added, CancellationToken.None);
-        Console.Error.WriteLine($"workspace root inferred from opened file: {directory} ({added.Count} files)");
+        // Deliberately no scan / parse here. The hierarchy tree is built from
+        // the directory listing, and parsing every source file of a large
+        // project synchronously on didOpen would block the rtl/hierarchy
+        // request for minutes (the tree would render empty). Files are loaded
+        // and parsed lazily when a node is expanded (see TryLoadFileFromDisk).
+        Console.Error.WriteLine($"workspace root inferred from opened file: {directory}");
     }
 
     /// <summary>
@@ -578,9 +582,9 @@ public sealed class LspHandler
             if (!_workspaceRoots.Contains(directory)) _workspaceRoots.Add(directory);
             if (!project.WorkspaceRoots.Contains(directory)) project.WorkspaceRoots.Add(directory);
 
-            List<InMemoryFile> added = ScanWorkspaceFiles(project, CancellationToken.None);
-            ParseFiles(added, CancellationToken.None);
-            Console.Error.WriteLine($"workspace root inferred from known file: {directory} ({added.Count} files)");
+            // no eager scan / parse: the tree is built from the directory
+            // listing and files are parsed lazily when expanded
+            Console.Error.WriteLine($"workspace root inferred from known file: {directory}");
             return;
         }
     }
@@ -1125,24 +1129,40 @@ public sealed class LspHandler
             EnsureWorkspaceRootFromKnownFiles(project);
         }
 
-        if (!string.IsNullOrEmpty(folderPath))
+        // A single unreadable directory / file must never blank the whole tree:
+        // the request is answered with whatever could be listed.
+        try
         {
-            // expand a workspace folder
-            return new HierarchyResult { Nodes = BuildFolderNodes(project, folderPath) };
-        }
+            if (!string.IsNullOrEmpty(folderPath))
+            {
+                // expand a workspace folder
+                return new HierarchyResult { Nodes = BuildFolderNodes(project, folderPath) };
+            }
 
-        if (nodePath.Count == 0 && string.IsNullOrEmpty(fileUri))
-        {
-            // top level: the whole workspace (folder tree + files)
-            return new HierarchyResult { Nodes = BuildWorkspaceNodes(project) };
-        }
+            if (nodePath.Count == 0 && string.IsNullOrEmpty(fileUri))
+            {
+                // top level: the whole workspace (folder tree + files)
+                return new HierarchyResult { Nodes = BuildWorkspaceNodes(project) };
+            }
 
-        if (string.IsNullOrEmpty(fileUri) || project.FindFile(fileUri) is not InMemoryFile file)
+            if (string.IsNullOrEmpty(fileUri))
+            {
+                return new HierarchyResult { Nodes = new List<HierarchyNode>() };
+            }
+
+            InMemoryFile? file = TryLoadFileFromDisk(project, fileUri);
+            if (file == null)
+            {
+                return new HierarchyResult { Nodes = new List<HierarchyNode>() };
+            }
+
+            return new HierarchyResult { Nodes = BuildFileNodes(file, nodePath) };
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            Console.Error.WriteLine($"rtl/hierarchy failed for '{folderPath ?? fileUri}': {ex.Message}");
             return new HierarchyResult { Nodes = new List<HierarchyNode>() };
         }
-
-        return new HierarchyResult { Nodes = BuildFileNodes(file, nodePath) };
     }
 
     /// <summary>
@@ -1206,6 +1226,34 @@ public sealed class LspHandler
     /// Accepts both a workspace-relative path (single root) and an absolute
     /// path (a root node when several roots are open).
     /// </summary>
+    private InMemoryFile? TryLoadFileFromDisk(InMemoryProject project, string uri)
+    {
+        if (project.FindFile(uri) is InMemoryFile known) return known;
+
+        string? path = UriToAbsolutePath(uri);
+        if (string.IsNullOrEmpty(path) || !File.Exists(path)) return null;
+
+        string ext = Path.GetExtension(path);
+        if (ext is not (".sv" or ".svh" or ".v" or ".vh")) return null;
+
+        try
+        {
+            string text = File.ReadAllText(path);
+            bool isSystemVerilog = ext is ".sv" or ".svh";
+            InMemoryFile file = project.AddOrUpdateFile(uri, path, text, isSystemVerilog);
+            file.ForceBuild();
+            return file;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
     private static string? ResolveFolderDirectory(InMemoryProject project, string folderPath)
     {
         if (Path.IsPathRooted(folderPath))
@@ -1233,12 +1281,16 @@ public sealed class LspHandler
     {
         List<HierarchyNode> nodes = new();
 
-        IEnumerable<string> subDirectories;
-        IEnumerable<string> files;
+        // Materialise the listings inside the try: Directory.Enumerate* is lazy,
+        // so an unreadable entry would otherwise throw from the foreach below,
+        // outside the guard, and the whole rtl/hierarchy request would fail
+        // (the tree then renders empty).
+        List<string> subDirectories;
+        List<string> files;
         try
         {
-            subDirectories = Directory.EnumerateDirectories(directory);
-            files = Directory.EnumerateFiles(directory);
+            subDirectories = Directory.EnumerateDirectories(directory).ToList();
+            files = Directory.EnumerateFiles(directory).ToList();
         }
         catch (IOException)
         {
@@ -1267,12 +1319,15 @@ public sealed class LspHandler
         {
             string name = Path.GetFileName(path);
             string uri = PathToUri(path);
-            bool hasChildren = false;
 
-            if (project.FindFile(uri) is InMemoryFile known)
-            {
-                hasChildren = known.GetHierarchyRootCount() > 0;
-            }
+            // A SystemVerilog / Verilog source is expandable into its instance
+            // hierarchy; it is loaded and parsed lazily on expansion, so an
+            // unparsed file still has to advertise itself as expandable or the
+            // user could never expand it (the tree would show leaves only).
+            string ext = Path.GetExtension(path);
+            bool hasChildren = project.FindFile(uri) is InMemoryFile known
+                ? known.GetHierarchyRootCount() > 0
+                : ext is ".sv" or ".svh" or ".v" or ".vh";
 
             nodes.Add(new HierarchyNode
             {

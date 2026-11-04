@@ -245,6 +245,11 @@ internal sealed class InMemoryProject : ISystemVerilogProject
         {
             CodeEditor2.Data.TextFile textFile = GetOrCreatePluginItem(relativePath, file.IsSystemVerilog);
             SetPluginItemText(textFile, file.CodeDocumentText);
+            // The file's text changed: the per-instance parse results this file
+            // produced for its instances are now stale. Drop them so an expand
+            // re-parses the source and shows the current instantiations (the
+            // editor's re-parse loop does this; the LSP host has none).
+            (textFile as pluginVerilog.Data.VerilogFile)?.ClearInstancedParsedDocuments();
         }
     }
 
@@ -746,7 +751,15 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// </summary>
     private static void EnsureInstanceParsed(pluginVerilog.Data.IVerilogRelatedFile item)
     {
-        if (item.VerilogParsedDocument != null) return;
+        // Re-parse when the parse result is stale: an instance caches the
+        // ParsedDocument produced from its source file (keyed by module +
+        // parameter overrides). When that source file is edited (didChange)
+        // the instance's cached parse still reflects the old text, so the
+        // hierarchy under a parent would keep showing the previous
+        // instantiations. CheckDirty() compares the document version and sets
+        // ReparseRequested, exactly like the editor.
+        item.CheckDirty();
+        if (item.VerilogParsedDocument != null && !item.ReparseRequested) return;
 
         CodeEditor2.CodeEditor.Parser.DocumentParser? parser = item.CreateDocumentParser(
             CodeEditor2.CodeEditor.Parser.DocumentParser.ParseModeEnum.BackgroundParse, null);

@@ -67,6 +67,7 @@ public sealed class LspHandler
         // LSP allows implementation-defined methods as long as they use the
         // "$/" free-for-all namespace or a vendor prefix; "rtl/" is ours.
         _requestHandlers["rtl/hierarchy"] = HandleHierarchy;
+        _requestHandlers["rtl/reparse"] = HandleReparse;
 
         _notificationHandlers["initialized"] = HandleInitialized;
         _notificationHandlers["exit"] = HandleExit;
@@ -474,6 +475,43 @@ public sealed class LspHandler
     }
 
     /// <summary>
+    /// Canonicalises a document URI so the client's didOpen / didChange form
+    /// and the workspace scan form map to the same key.
+    ///
+    /// <para>
+    /// VS Code sends the drive-letter colon percent-encoded and the drive
+    /// letter lower-case (<c>file:///c%3A/Users/x</c>), while
+    /// <see cref="PathToUri"/> produces <c>file:///C:/Users/x</c>. Without
+    /// normalisation the same file was registered twice (once per form), so an
+    /// opened document was parsed under one key while the RTL hierarchy looked
+    /// it up under the other - the tree did not reflect the opened file.
+    /// </para>
+    /// </summary>
+    private static string NormalizeUri(string uri)
+    {
+        if (string.IsNullOrEmpty(uri)) return uri;
+        if (!uri.StartsWith("file://", StringComparison.OrdinalIgnoreCase)) return uri;
+
+        // Only rewrite when the URI actually needs it: a Windows drive-letter
+        // form (optionally with the colon percent-encoded / lower-case drive,
+        // which is what VS Code sends). A synthetic / relative id such as
+        // "file:///test.sv" is left untouched so tests and non-file hosts keep
+        // stable keys.
+        bool hasEscaped = uri.IndexOf('%') >= 0;
+        bool isDriveForm =
+            uri.Length >= 10
+            && uri[7] == '/'
+            && char.IsLetter(uri[8])
+            && (uri[9] == ':' || (hasEscaped && uri.Length > 12 && uri[9] == '%' && uri[10] == '3' && (uri[11] == 'A' || uri[11] == 'a')));
+        if (!isDriveForm && !hasEscaped) return uri;
+
+        string? absolutePath = UriToAbsolutePath(uri);
+        if (string.IsNullOrEmpty(absolutePath)) return uri;
+        string canonical = PathToUri(absolutePath);
+        return string.IsNullOrEmpty(canonical) ? uri : canonical;
+    }
+
+    /// <summary>
     /// Converts an LSP document URI to an absolute local path, handling the
     /// Windows drive-letter form (<c>file:///D:/x/y.sv</c>) and percent
     /// escaping.
@@ -545,6 +583,30 @@ public sealed class LspHandler
         }
     }
 
+    /// <summary>
+    /// Re-parses one file on demand so the RTL hierarchy reflects an edit even
+    /// before the client sends a didChange (e.g. the user clicked a hierarchy
+    /// node). Params: <c>{ "uri": "file:///..." }</c>. Returns
+    /// <c>{ "parsed": true }</c>.
+    /// </summary>
+    private object? HandleReparse(JsonElement parameters, CancellationToken cancellationToken)
+    {
+        string? uri = null;
+        if (parameters.TryGetProperty("uri", out var uriElement) && uriElement.ValueKind == JsonValueKind.String)
+        {
+            uri = NormalizeUri(uriElement.GetString() ?? string.Empty);
+        }
+        if (string.IsNullOrEmpty(uri)) return new { parsed = false };
+
+        InMemoryProject project = GetOrCreateProjectForUri(uri);
+        InMemoryFile? file = TryLoadFileFromDisk(project, uri);
+        if (file == null) return new { parsed = false };
+
+        file.Rebuild();
+        PushDiagnostics(project, uri);
+        return new { parsed = true };
+    }
+
     private object? HandleShutdown(JsonElement parameters, CancellationToken cancellationToken) => null;
 
     private void HandleInitialized(JsonElement parameters, CancellationToken cancellationToken)
@@ -607,7 +669,14 @@ public sealed class LspHandler
         if (!textDocumentProp.TryGetProperty("uri", out var uriProp)) return;
         if (!textDocumentProp.TryGetProperty("text", out var textProp)) return;
 
-        string uri = uriProp.GetString() ?? string.Empty;
+        // Normalise the URI so the didOpen entry is the SAME InMemoryFile the
+        // workspace scan created for this file. VS Code sends the drive-letter
+        // colon percent-encoded and lower-case (file:///c%3A/...), while the
+        // scan builds file:///C:/...; without normalisation the same physical
+        // file ended up as two entries, so opening it (didOpen) parsed one entry
+        // while the RTL hierarchy expanded the other - the tree never reflected
+        // the opened file until an edit happened to touch the scanned entry.
+        string uri = NormalizeUri(uriProp.GetString() ?? string.Empty);
         string text = textProp.GetString() ?? string.Empty;
         string languageId = textDocumentProp.TryGetProperty("languageId", out var lang) ? lang.GetString() ?? "systemverilog" : "systemverilog";
         bool isSystemVerilog = languageId.IndexOf("systemverilog", StringComparison.OrdinalIgnoreCase) >= 0;
@@ -759,7 +828,7 @@ public sealed class LspHandler
         if (!td.TryGetProperty("uri", out var uriProp)) return;
         if (!parameters.TryGetProperty("contentChanges", out var changes)) return;
 
-        string uri = uriProp.GetString() ?? string.Empty;
+        string uri = NormalizeUri(uriProp.GetString() ?? string.Empty);
         if (changes.ValueKind != JsonValueKind.Array) return;
         if (changes.GetArrayLength() == 0) return;
 
@@ -787,7 +856,7 @@ public sealed class LspHandler
     {
         if (!parameters.TryGetProperty("textDocument", out var td)) return;
         if (!td.TryGetProperty("uri", out var uriProp)) return;
-        string uri = uriProp.GetString() ?? string.Empty;
+        string uri = NormalizeUri(uriProp.GetString() ?? string.Empty);
         _openUris.Remove(uri);
 
         InMemoryProject project = GetOrCreateProjectForUri(uri);
@@ -836,7 +905,7 @@ public sealed class LspHandler
     {
         if (!parameters.TryGetProperty("textDocument", out var td)) return;
         if (!td.TryGetProperty("uri", out var uriProp)) return;
-        string uri = uriProp.GetString() ?? string.Empty;
+        string uri = NormalizeUri(uriProp.GetString() ?? string.Empty);
 
         InMemoryProject project = GetOrCreateProjectForUri(uri);
         ISystemVerilogFile? existing = project.FindFile(uri);
@@ -1213,7 +1282,9 @@ public sealed class LspHandler
         string? fileUri = null;
         if (parameters.TryGetProperty("uri", out var uriElement) && uriElement.ValueKind == JsonValueKind.String)
         {
-            fileUri = uriElement.GetString();
+            // normalise to the scan form so the file is looked up as the same
+            // InMemoryFile the workspace registered (see NormalizeUri)
+            fileUri = NormalizeUri(uriElement.GetString() ?? string.Empty);
         }
 
         // folder of the node being expanded (top level / folder nodes)
@@ -1609,7 +1680,7 @@ public sealed class LspHandler
         index = 0;
         if (!parameters.TryGetProperty("textDocument", out var td)) return false;
         if (!td.TryGetProperty("uri", out var uriProp)) return false;
-        string uri = uriProp.GetString() ?? string.Empty;
+        string uri = NormalizeUri(uriProp.GetString() ?? string.Empty);
         if (!parameters.TryGetProperty("position", out var pos)) return false;
 
         InMemoryProject project = GetOrCreateProjectForUri(uri);

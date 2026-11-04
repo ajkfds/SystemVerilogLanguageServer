@@ -983,7 +983,7 @@ public sealed class LspHandler
     {
         if (!parameters.TryGetProperty("textDocument", out var td)) return Array.Empty<DocumentSymbol>();
         if (!td.TryGetProperty("uri", out var uriProp)) return Array.Empty<DocumentSymbol>();
-        string uri = uriProp.GetString() ?? string.Empty;
+        string uri = NormalizeUri(uriProp.GetString() ?? string.Empty);
         InMemoryProject project = GetOrCreateProjectForUri(uri);
         if (project.FindFile(uri) is not InMemoryFile file) return Array.Empty<DocumentSymbol>();
         ISystemVerilogDocument? doc = project.GetDocument(file);
@@ -1158,7 +1158,7 @@ public sealed class LspHandler
     {
         if (!parameters.TryGetProperty("textDocument", out var td)) return null;
         if (!td.TryGetProperty("uri", out var uriProp)) return null;
-        string uri = uriProp.GetString() ?? string.Empty;
+        string uri = NormalizeUri(uriProp.GetString() ?? string.Empty);
         if (!parameters.TryGetProperty("position", out var pos)) return null;
 
         InMemoryProject project = GetOrCreateProjectForUri(uri);
@@ -1197,7 +1197,11 @@ public sealed class LspHandler
         Console.Error.WriteLine("HandleSemanticTokens called");
         if (!parameters.TryGetProperty("textDocument", out var td)) return new SemanticTokens { Data = new List<int>() };
         if (!td.TryGetProperty("uri", out var uriProp)) return new SemanticTokens { Data = new List<int>() };
-        string uri = uriProp.GetString() ?? string.Empty;
+        // Normalise so the request resolves the same entry the workspace scan /
+        // didOpen registered (VS Code sends the escaped, lower-case drive form
+        // for semantic tokens too; without this the lookup missed and no
+        // highlight tokens were returned).
+        string uri = NormalizeUri(uriProp.GetString() ?? string.Empty);
         InMemoryProject project = GetOrCreateProjectForUri(uri);
         if (project.FindFile(uri) is not InMemoryFile file) return new SemanticTokens { Data = new List<int>() };
 

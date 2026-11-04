@@ -1440,7 +1440,7 @@ public sealed class LspHandler
             // user could never expand it (the tree would show leaves only).
             string ext = Path.GetExtension(path);
             bool hasChildren = project.FindFile(uri) is InMemoryFile known
-                ? known.GetHierarchyRootCount() > 0
+                ? known.HasHierarchyChildren()
                 : ext is ".sv" or ".svh" or ".v" or ".vh";
 
             nodes.Add(new HierarchyNode
@@ -1515,12 +1515,11 @@ public sealed class LspHandler
     /// </summary>
     private static List<HierarchyNode> BuildFileNodes(InMemoryFile file, List<int> nodePath)
     {
-        // an empty nodePath means "the first level of this file"
-        List<HierarchyNodeDescriptor> children =
-            nodePath.Count == 0 ? file.GetHierarchyRoots() : ResolveChildren(file, nodePath);
-
+        // The editor's NavigatePanel update code resolves the children of the
+        // node being expanded (an empty nodePath means "the first level of this
+        // file"), so the tree is built lazily exactly like the editor's.
         List<HierarchyNode> result = new();
-        foreach (HierarchyNodeDescriptor child in children)
+        foreach (HierarchyNodeDescriptor child in file.GetHierarchyChildren(nodePath))
         {
             result.Add(new HierarchyNode
             {
@@ -1530,30 +1529,10 @@ public sealed class LspHandler
                 Uri = child.Uri,
                 StartLine = child.StartLine,
                 StartCharacter = child.StartCharacter,
-                HasChildren = child.Children.Count > 0,
+                HasChildren = child.HasChildren,
             });
         }
         return result;
-    }
-
-    /// <summary>
-    /// Walks the <paramref name="nodePath"/> (a sequence of child indexes from
-    /// the file's first level) and returns the children of the addressed node.
-    /// Returns an empty list when the path does not resolve (the file changed
-    /// between the request that produced the path and this one).
-    /// </summary>
-    private static List<HierarchyNodeDescriptor> ResolveChildren(InMemoryFile file, List<int> nodePath)
-    {
-        List<HierarchyNodeDescriptor> level = file.GetHierarchyRoots();
-
-        HierarchyNodeDescriptor? node = null;
-        foreach (int index in nodePath)
-        {
-            if (index < 0 || index >= level.Count) return new List<HierarchyNodeDescriptor>();
-            node = level[index];
-            level = node.Children;
-        }
-        return node?.Children ?? new List<HierarchyNodeDescriptor>();
     }
 
     /// <summary>

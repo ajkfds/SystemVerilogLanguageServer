@@ -158,6 +158,39 @@ internal sealed class InMemoryProject : ISystemVerilogProject
     }
 
     /// <summary>
+    /// Returns the plugin item tree entry for <paramref name="relativePath"/>
+    /// (the <see cref="pluginVerilog.Data.VerilogFile"/> /
+    /// <see cref="pluginVerilog.Data.VerilogHeaderFile"/> the editor's
+    /// NavigatePanel update code operates on), or null when the file has not
+    /// been registered (no workspace root yet).
+    /// </summary>
+    internal CodeEditor2.Data.TextFile? GetPluginItem(string relativePath)
+    {
+        lock (_pluginItemLock)
+        {
+            return _pluginItems.TryGetValue(relativePath, out CodeEditor2.Data.TextFile? item) ? item : null;
+        }
+    }
+
+    /// <summary>
+    /// Maps a workspace-relative path back to the document URI the LSP client
+    /// uses, so a hierarchy node can open the file it lives in. Returns null
+    /// when no loaded file matches (e.g. an include that was never opened).
+    /// </summary>
+    internal string? GetUriForRelativePath(string? relativePath)
+    {
+        if (string.IsNullOrEmpty(relativePath)) return null;
+        foreach (InMemoryFile file in _files.Values)
+        {
+            if (string.Equals(GetProjectRelativePath(file.AbsolutePath), relativePath, StringComparison.Ordinal))
+            {
+                return file.Id;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
     /// Converts an absolute path into the project-relative path the plugin
     /// item tree is keyed by (workspace-relative, '/' separated). Returns null
     /// when the path is not under any workspace root (an untitled buffer, or a
@@ -592,119 +625,263 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     // RTL hierarchy (NavigatePanel equivalent) for the VS Code tree view
     // ------------------------------------------------------------------
 
-    /// <summary>
-    /// Number of top level hierarchy entries of this file (its instantiations,
-    /// or one entry per building block when the file declares several).
-    /// </summary>
-    internal int GetHierarchyRootCount() => GetHierarchyRoots().Count;
 
     /// <summary>
-    /// Top level entries of the file's RTL hierarchy. A file with a single
-    /// building block (the common case) exposes that building block's own
-    /// instantiations; a file with several building blocks exposes one entry
-    /// per building block (same rule as the editor's NavigatePanel
-    /// <c>Updater.addSubItemsMultiBuildingBlock</c>).
+    /// Whether expanding this file would show any child node. Used for the
+    /// expand arrow in the folder listing, which runs for every file in a
+    /// directory: it must stay cheap, so it inspects the parse result directly
+    /// instead of running the editor's Updater (which materialises the whole
+    /// instance tree).
     /// </summary>
-    internal List<HierarchyNodeDescriptor> GetHierarchyRoots()
+    internal bool HasHierarchyChildren()
     {
         EnsureBuilt();
-        List<HierarchyNodeDescriptor> roots = new();
-        if (_parsedDocument?.Root == null) return roots;
+        if (_parsedDocument?.Root == null) return false;
 
-        List<pluginVerilog.Verilog.BuildingBlocks.BuildingBlock> buildingBlocks =
-            _parsedDocument.Root.BuildingBlocks.Values.ToList();
-
-        if (buildingBlocks.Count == 0) return roots;
-
-        if (buildingBlocks.Count == 1)
+        foreach (pluginVerilog.Verilog.BuildingBlocks.BuildingBlock block
+                 in _parsedDocument.Root.BuildingBlocks.Values)
         {
-            foreach (pluginVerilog.Verilog.Items.IBuildingBlockInstantiation inst
-                     in buildingBlocks[0].GetBuildingBlockInstantiations())
-            {
-                HierarchyNodeDescriptor? node = CreateInstanceNode(inst, new HashSet<string>());
-                if (node != null) roots.Add(node);
-            }
-            return roots;
+            if (block.GetBuildingBlockInstantiations().Count > 0) return true;
         }
-
-        // several building blocks in one file: one entry per building block,
-        // each expanded to the instantiations inside that block.
-        foreach (pluginVerilog.Verilog.BuildingBlocks.BuildingBlock block in buildingBlocks)
-        {
-            HierarchyNodeDescriptor blockNode = new()
-            {
-                Label = block.Name,
-                Detail = block.GetType().Name,
-                Uri = Id,
-            };
-            foreach (pluginVerilog.Verilog.Items.IBuildingBlockInstantiation inst
-                     in block.GetBuildingBlockInstantiations())
-            {
-                HierarchyNodeDescriptor? node = CreateInstanceNode(inst, new HashSet<string>());
-                if (node != null) blockNode.Children.Add(node);
-            }
-            roots.Add(blockNode);
-        }
-        return roots;
+        return false;
     }
 
     /// <summary>
-    /// Builds one hierarchy node for a building block instantiation, recursing
-    /// into the instantiated building block so the whole instance tree is
-    /// available. <paramref name="visiting"/> guards against recursive module
-    /// instantiation (module A instantiating itself, or a mutual A-&gt;B-&gt;A
-    /// loop), which would otherwise recurse forever.
+    /// Children of the node addressed by <paramref name="nodePath"/> (an empty
+    /// path means the file's first level), produced by the editor's own
+    /// NavigatePanel update code
+    /// (<see cref="pluginVerilog.Data.VerilogCommon.Updater"/>) rather than a
+    /// re-implementation. The editor builds the tree from the plugin item's
+    /// <c>Items</c> collection, so the LSP view and the editor's NavigateView
+    /// stay identical by construction (same building-block rules, same
+    /// instance-array handling, same include / imported-package children).
+    ///
+    /// <para>
+    /// Like the editor, expansion is lazy: the Updater is run on the item being
+    /// expanded (the file itself for the first level, the instance for a deeper
+    /// level), which is exactly what the editor does when a node is expanded.
+    /// Running it for the whole tree up front would parse every instantiated
+    /// module eagerly.
+    /// </para>
+    ///
+    /// <para>
+    /// The plugin item is the one registered in the shared
+    /// <see cref="InMemoryProject.PluginProject"/> item tree (see
+    /// <see cref="InMemoryProject.RegisterPluginItem"/>); the Updater runs
+    /// UI-free (it only touches <c>Data.Item.Items</c>), which the LSP host
+    /// relies on.
+    /// </para>
     /// </summary>
-    private HierarchyNodeDescriptor? CreateInstanceNode(
-        pluginVerilog.Verilog.Items.IBuildingBlockInstantiation inst,
-        HashSet<string> visiting)
+    internal List<HierarchyNodeDescriptor> GetHierarchyChildren(List<int> nodePath)
     {
-        string label = string.IsNullOrEmpty(inst.Name) ? inst.SourceName : inst.Name;
-        if (string.IsNullOrEmpty(label) && string.IsNullOrEmpty(inst.SourceName)) return null;
+        EnsureBuilt();
+        List<HierarchyNodeDescriptor> result = new();
+        if (_parsedDocument?.Root == null) return result;
 
-        int? line = null;
-        int? character = null;
-        if (inst.BeginIndexReference != null)
+        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile();
+        if (pluginFile == null) return result;
+
+        // Walk down to the item being expanded, running the editor's Updater on
+        // each level so its Items collection is populated (the editor does the
+        // same lazily when a node is expanded).
+        CodeEditor2.Data.Item current = pluginFile;
+        foreach (int index in nodePath)
         {
-            line = GetLineOfIndex(inst.BeginIndexReference.Index);
-            character = GetCharacterOfIndex(inst.BeginIndexReference.Index);
+            List<CodeEditor2.Data.Item> children = GetUpdatedChildren(current);
+            if (index < 0 || index >= children.Count) return result;
+            current = children[index];
         }
 
-        HierarchyNodeDescriptor node = new()
+        foreach (CodeEditor2.Data.Item child in GetUpdatedChildren(current))
         {
-            Label = label ?? "",
-            Detail = inst.SourceName,
-            Uri = Id,
-            StartLine = line,
-            StartCharacter = character,
-        };
+            result.Add(CreateDescriptor(child));
+        }
+        return result;
+    }
 
-        string? sourceName = inst.SourceName;
-        if (string.IsNullOrEmpty(sourceName)) return node;
+    /// <summary>
+    /// Runs the editor's NavigatePanel update code on <paramref name="item"/>
+    /// and returns its (now populated) children.
+    ///
+    /// <para>
+    /// An instance (module / interface) is parsed on demand first, exactly like
+    /// the editor: expanding a node parses the instantiated module (with the
+    /// instance's parameter overrides) and then runs the Updater. Without the
+    /// parse the instance has no <c>VerilogParsedDocument</c> and the Updater
+    /// would leave <c>Items</c> empty.
+    /// </para>
+    ///
+    /// <para>
+    /// Everything here is UI-free: <c>CreateDocumentParser</c> /
+    /// <c>ParseAsync</c> / <c>AcceptParsedDocumentAsync</c> only touch the
+    /// plugin data model (the editor-side colour/refresh step is guarded by the
+    /// headless checks in those methods).
+    /// </para>
+    /// </summary>
+    private List<CodeEditor2.Data.Item> GetUpdatedChildren(CodeEditor2.Data.Item item)
+    {
+        if (item is not pluginVerilog.Data.IVerilogRelatedFile verilogItem)
+        {
+            return item.Items.GetSnapShot();
+        }
 
-        // recursion guard: a building block already on the current path is not
-        // expanded again (the node itself is still shown).
-        string visitKey = sourceName! + "#" + (inst.ParameterOverrides?.Count ?? 0);
-        if (visiting.Contains(visitKey)) return node;
-        visiting.Add(visitKey);
         try
         {
-            pluginVerilog.Verilog.BuildingBlocks.BuildingBlock? instanced = inst.GetInstancedBuildingBlock();
-            if (instanced != null)
-            {
-                foreach (pluginVerilog.Verilog.Items.IBuildingBlockInstantiation child
-                         in instanced.GetBuildingBlockInstantiations())
-                {
-                    HierarchyNodeDescriptor? childNode = CreateInstanceNode(child, visiting);
-                    if (childNode != null) node.Children.Add(childNode);
-                }
-            }
+            EnsureInstanceParsed(verilogItem);
+            pluginVerilog.Data.VerilogCommon.Updater
+                .UpdateAsync(verilogItem, _hierarchyUpdateSemaphore)
+                .GetAwaiter().GetResult();
         }
-        finally
+        catch (Exception ex)
         {
-            visiting.Remove(visitKey);
+            Console.Error.WriteLine($"rtl/hierarchy: Updater failed for {item.Name}: {ex.Message}");
+        }
+        return item.Items.GetSnapShot();
+    }
+
+    /// <summary>
+    /// Parses an instance whose <c>VerilogParsedDocument</c> is still missing
+    /// (an instance is parsed lazily on expand, like the editor). The file root
+    /// itself is already parsed by <see cref="EnsureBuilt"/>.
+    /// </summary>
+    private static void EnsureInstanceParsed(pluginVerilog.Data.IVerilogRelatedFile item)
+    {
+        if (item.VerilogParsedDocument != null) return;
+
+        CodeEditor2.CodeEditor.Parser.DocumentParser? parser = item.CreateDocumentParser(
+            CodeEditor2.CodeEditor.Parser.DocumentParser.ParseModeEnum.BackgroundParse, null);
+        if (parser == null) return;
+
+        parser.ParseAsync().GetAwaiter().GetResult();
+        item.AcceptParsedDocumentAsync(parser).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Serialises the editor's Updater runs. The Updater swaps
+    /// <c>Data.Item.Items</c> under its own semaphore; sharing one instance
+    /// across files keeps concurrent hierarchy requests from interleaving.
+    /// </summary>
+    private static readonly SemaphoreSlim _hierarchyUpdateSemaphore = new(1, 1);
+
+    /// <summary>
+    /// The plugin-side <see cref="pluginVerilog.Data.VerilogFile"/> for this
+    /// in-memory file (the item the editor's NavigatePanel update code
+    /// operates on). Null when the file is not registered in the plugin item
+    /// tree (no workspace root yet).
+    /// </summary>
+    private pluginVerilog.Data.VerilogFile? GetPluginVerilogFile()
+    {
+        string? relativePath = ProjectOwner?.GetProjectRelativePath(AbsolutePath);
+        if (string.IsNullOrEmpty(relativePath)) return null;
+        return ProjectOwner?.GetPluginItem(relativePath) as pluginVerilog.Data.VerilogFile;
+    }
+
+    /// <summary>
+    /// Converts one NavigatePanel <see cref="CodeEditor2.Data.Item"/> (a
+    /// module / interface instance, an imported package, an include header
+    /// instance, ...) into a hierarchy node descriptor. Children are resolved
+    /// lazily on expansion (see <see cref="GetHierarchyChildren"/>), so only
+    /// the expandability is recorded here.
+    /// </summary>
+    private HierarchyNodeDescriptor CreateDescriptor(CodeEditor2.Data.Item item)
+    {
+        HierarchyNodeDescriptor node = new()
+        {
+            Label = item.Name,
+            Detail = DescribeItem(item),
+            Uri = ResolveItemUri(item),
+            HasChildren = CanExpand(item),
+        };
+
+        // position of the instantiating statement (click-to-jump)
+        pluginVerilog.Verilog.Items.IBuildingBlockInstantiation? inst = GetInstantiatingItem(item);
+        if (inst?.BeginIndexReference != null)
+        {
+            node.StartLine = GetLineOfIndex(inst.BeginIndexReference.Index);
+            node.StartCharacter = GetCharacterOfIndex(inst.BeginIndexReference.Index);
         }
         return node;
+    }
+
+    /// <summary>
+    /// Whether expanding <paramref name="item"/> would show children, so the
+    /// client can draw the expand arrow before the children are requested.
+    ///
+    /// <para>
+    /// An instance is expandable when the module / interface it instantiates
+    /// declares further instantiations. The instance's own parse result is not
+    /// available yet (it is parsed lazily on expansion, like the editor), so
+    /// the check resolves the instantiated building block from the parse of its
+    /// source file — which is already loaded for the workspace.
+    /// </para>
+    /// </summary>
+    private static bool CanExpand(CodeEditor2.Data.Item item)
+    {
+        // module / interface instance: look at the instantiated building block
+        pluginVerilog.Verilog.Items.IBuildingBlockInstantiation? inst = GetInstantiatingItem(item);
+        pluginVerilog.Verilog.BuildingBlocks.BuildingBlock? instanced = inst?.GetInstancedBuildingBlock();
+        if (instanced != null)
+        {
+            return instanced.GetBuildingBlockInstantiations().Count > 0;
+        }
+
+        // imported package / include header (or an instance whose source could
+        // not be resolved): fall back to the item's own parse result
+        if (item is not pluginVerilog.Data.IVerilogRelatedFile verilogItem) return false;
+        pluginVerilog.Verilog.ParsedDocument? parsed = verilogItem.VerilogParsedDocument;
+        if (parsed?.Root == null) return false;
+
+        foreach (pluginVerilog.Verilog.BuildingBlocks.BuildingBlock block
+                 in parsed.Root.BuildingBlocks.Values)
+        {
+            if (block.GetBuildingBlockInstantiations().Count > 0) return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The instantiating item behind a NavigatePanel item, used for the
+    /// click-to-jump position. Module / interface instances keep a weak
+    /// reference to the instantiation they were created from.
+    /// </summary>
+    private static pluginVerilog.Verilog.Items.IBuildingBlockInstantiation? GetInstantiatingItem(
+        CodeEditor2.Data.Item item)
+    {
+        return item switch
+        {
+            pluginVerilog.Data.VerilogModuleInstance module => module.GetParentInstanciatiation(),
+            pluginVerilog.Data.InterfaceInstance iface => iface.GetParentInstanciatiation(),
+            _ => null,
+        };
+    }
+
+    /// <summary>
+    /// Short description shown next to the node label: the instantiated type
+    /// for instances, the package name for imported packages, the file path for
+    /// include headers.
+    /// </summary>
+    private static string? DescribeItem(CodeEditor2.Data.Item item)
+    {
+        return item switch
+        {
+            pluginVerilog.Data.VerilogModuleInstance module => module.InstanceName,
+            pluginVerilog.Data.InterfaceInstance iface => iface.InstanceName,
+            pluginVerilog.Data.ImportedPackage package => package.PackageName,
+            pluginVerilog.Data.VerilogHeaderInstance header => header.RelativePath,
+            _ => item.RelativePath,
+        };
+    }
+
+    /// <summary>
+    /// URI of the file a node lives in, so clicking it opens the right
+    /// document. Instances share their source file's document; imported
+    /// packages / include headers point at their own file.
+    /// </summary>
+    private string? ResolveItemUri(CodeEditor2.Data.Item item)
+    {
+        string? relativePath = item.RelativePath;
+        string? uri = ProjectOwner?.GetUriForRelativePath(relativePath);
+        return uri ?? Id;
     }
 
     private int? GetLineOfIndex(int index)
@@ -862,6 +1039,16 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         CodeEditor2.Data.Project project = ProjectOwner?.PluginProject
             ?? throw new InvalidOperationException(
                 "InMemoryFile must be created through InMemoryProject.AddOrUpdateFile");
+
+        // Prefer the plugin item registered in the shared item tree: the
+        // editor's NavigatePanel update code (VerilogCommon.Updater) reads the
+        // parse result from *that* item's ParsedDocument, so parsing a
+        // throw-away VerilogFile would leave the tree empty. Reusing the
+        // registered item keeps the parse result and the hierarchy in sync.
+        if (GetPluginVerilogFile() is pluginVerilog.Data.VerilogFile registered)
+        {
+            return registered;
+        }
 
         // RelativePath must be the workspace-relative path, not the document
         // URI: WordScanner.parseInclude derives the include target's

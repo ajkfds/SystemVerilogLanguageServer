@@ -74,6 +74,14 @@ namespace SystemVerilogLanguageServer
         public string? Uri { get; set; }
         public int? StartLine { get; set; }
         public int? StartCharacter { get; set; }
+
+        /// <summary>
+        /// True when expanding the node shows children. Resolved from the parse
+        /// result so the client can draw the expand arrow before the children
+        /// are requested (expansion is lazy, like the editor's NavigatePanel).
+        /// </summary>
+        public bool HasChildren { get; set; }
+
         public List<HierarchyNodeDescriptor> Children { get; } = new();
     }
 }

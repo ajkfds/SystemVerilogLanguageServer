@@ -835,7 +835,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         pluginVerilog.Verilog.BuildingBlocks.BuildingBlock? instanced = inst?.GetInstancedBuildingBlock();
         if (instanced != null)
         {
-            return instanced.GetBuildingBlockInstantiations().Count > 0;
+            return HasResolvableChildInstantiation(instanced);
         }
 
         // imported package / include header (or an instance whose source could
@@ -857,6 +857,31 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// click-to-jump position. Module / interface instances keep a weak
     /// reference to the instantiation they were created from.
     /// </summary>
+    /// <summary>
+    /// True when an instantiated building block declares at least one further
+    /// instantiation that the editor's Updater will actually materialise (a
+    /// module or interface instance whose source resolves). Only instantiations
+    /// the Updater turns into child items count, so the expand arrow never
+    /// appears for a node that would expand to nothing (e.g. an instance of an
+    /// undefined module, which the Updater silently skips).
+    /// </summary>
+    private static bool HasResolvableChildInstantiation(
+        pluginVerilog.Verilog.BuildingBlocks.BuildingBlock block)
+    {
+        foreach (pluginVerilog.Verilog.Items.IBuildingBlockInstantiation inst
+                 in block.GetBuildingBlockInstantiations())
+        {
+            // The Updater only creates child items for module / interface
+            // instantiations; program / udp / bind instantiations have no
+            // navigate-node children.
+            if (inst is not (pluginVerilog.Verilog.Items.ModuleInstantiation
+                             or pluginVerilog.Verilog.Items.InterfaceInstance)) continue;
+
+            if (inst.GetInstancedBuildingBlock() != null) return true;
+        }
+        return false;
+    }
+
     private static pluginVerilog.Verilog.Items.IBuildingBlockInstantiation? GetInstantiatingItem(
         CodeEditor2.Data.Item item)
     {

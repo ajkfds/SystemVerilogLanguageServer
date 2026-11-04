@@ -542,10 +542,20 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// </summary>
     private void EnsureBuilt()
     {
-        if (_built || _manualSymbols) return;
-        _built = true;
-        BuildSymbols(((InMemoryCodeDocument)CodeDocument).GetText());
+        // Serialise the build: a large workspace is parsed in the background at
+        // initialize, and the hierarchy expand path may call EnsureBuilt on the
+        // same file concurrently. Without the lock a second caller could return
+        // before BuildSymbols finished (the _built flag is set first), leaving
+        // the dependency unregistered and the Updater dropping the instance.
+        lock (_buildLock)
+        {
+            if (_built || _manualSymbols) return;
+            _built = true;
+            BuildSymbols(((InMemoryCodeDocument)CodeDocument).GetText());
+        }
     }
+
+    private readonly object _buildLock = new();
 
     /// <summary>
     /// Forces the (lazy) symbol build immediately. Called by the LSP host on
@@ -554,6 +564,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// first query.
     /// </summary>
     internal void ForceBuild()
+    {
+        EnsureBuilt();
+    }
+
+    /// <summary>
+    /// Parses this file if it has not been built yet. Used by the hierarchy
+    /// expand path to make sure every instantiated module is registered in the
+    /// project name spaces before the Updater walks the instance tree (an
+    /// unparsed dependency is silently dropped by the Updater).
+    /// </summary>
+    internal void EnsureBuiltForResolve()
     {
         EnsureBuilt();
     }
@@ -613,16 +634,22 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     internal void Rebuild()
     {
         if (_manualSymbols) return;
-        _allElements.Clear();
-        _byName.Clear();
-        _buildingBlocks.Clear();
-        _members.Clear();
-        _diagnostics.Clear();
-        _parsedDocument = null;
-        _document = null;
-        _built = false;
-        // drop the cached plugin file so the new parse uses a fresh document
-        _verilogFile = null;
+        // Same lock as EnsureBuilt: a background workspace parse and a didChange
+        // rebuild must not interleave (one could clear the lists while the other
+        // is still filling them).
+        lock (_buildLock)
+        {
+            _allElements.Clear();
+            _byName.Clear();
+            _buildingBlocks.Clear();
+            _members.Clear();
+            _diagnostics.Clear();
+            _parsedDocument = null;
+            _document = null;
+            _built = false;
+            // drop the cached plugin file so the new parse uses a fresh document
+            _verilogFile = null;
+        }
         EnsureBuilt();
     }
 
@@ -723,6 +750,34 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// headless checks in those methods).
     /// </para>
     /// </summary>
+    /// <summary>
+    /// Builds every workspace file that has not been parsed yet, so the editor's
+    /// Updater can resolve the instantiations of the module being expanded.
+    ///
+    /// <para>
+    /// The Updater silently drops an instantiation whose source module is not
+    /// parsed yet (the DefinitionNameSpace has no entry for it), so expanding a
+    /// file before its dependencies were parsed showed an empty level - which
+    /// happens on a large workspace, where initialize parses in the background
+    /// and the user expands a node before the background pass reaches the
+    /// dependency. Building the remaining files here keeps the level complete.
+    /// </para>
+    ///
+    /// <para>
+    /// Cheap after the first expand: every file is flagged built, so subsequent
+    /// calls are a no-op loop. The parse is synchronous and UI-free.
+    /// </para>
+    /// </summary>
+    private void EnsureWorkspaceBuilt()
+    {
+        InMemoryProject? project = ProjectOwner;
+        if (project == null) return;
+        foreach (ISystemVerilogFile file in project.Files)
+        {
+            if (file is InMemoryFile mem) mem.EnsureBuiltForResolve();
+        }
+    }
+
     private List<CodeEditor2.Data.Item> GetUpdatedChildren(CodeEditor2.Data.Item item)
     {
         if (item is not pluginVerilog.Data.IVerilogRelatedFile verilogItem)
@@ -732,6 +787,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
 
         try
         {
+            EnsureWorkspaceBuilt();
             EnsureInstanceParsed(verilogItem);
             pluginVerilog.Data.VerilogCommon.Updater
                 .UpdateAsync(verilogItem, _hierarchyUpdateSemaphore)

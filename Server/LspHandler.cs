@@ -1995,6 +1995,12 @@ public sealed class WorkspaceEdit
     [JsonPropertyName("changes")] public Dictionary<string, List<TextEdit>>? Changes { get; set; }
 }
 
+public sealed class PrepareRenameResult
+{
+    [JsonPropertyName("range")] public LspRange Range { get; set; } = new();
+    [JsonPropertyName("placeholder")] public string? Placeholder { get; set; }
+}
+
 public sealed class CodeLens
 {
     [JsonPropertyName("range")] public LspRange Range { get; set; } = new();

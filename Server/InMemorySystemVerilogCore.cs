@@ -1008,6 +1008,60 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
+    /// LSP textDocument/formatting support: the edits that reformat every
+    /// module instantiation in the document (the same scope as the editor's
+    /// "autoFormat" tool). Empty when there is nothing to format.
+    /// </summary>
+    internal IReadOnlyList<pluginVerilog.CoreBridge.FormattingAdapter.TextEditEntry> GetFormattingEdits()
+    {
+        EnsureBuilt();
+        if (_parsedDocument == null) return Array.Empty<pluginVerilog.CoreBridge.FormattingAdapter.TextEditEntry>();
+        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        return pluginVerilog.CoreBridge.FormattingAdapter.GetFormattingEdits(verilogFile, _parsedDocument);
+    }
+
+    /// <summary>
+    /// LSP textDocument/signatureHelp support: the argument hint the editor
+    /// would pop up at the given index (the port / parameter label of the
+    /// argument being typed), produced by the plugin's partial parse. Returns
+    /// null when there is no hint at the caret.
+    /// </summary>
+    internal IReadOnlyList<pluginVerilog.CoreBridge.SignatureHelpAdapter.SignatureEntry>? GetSignatures(int index)
+    {
+        EnsureBuilt();
+        if (_parsedDocument == null) return null;
+        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        return pluginVerilog.CoreBridge.SignatureHelpAdapter.GetSignatures(verilogFile, _parsedDocument, index);
+    }
+
+    /// <summary>
+    /// LSP textDocument/foldingRange support: the fold regions the parser
+    /// recorded on the document (begin/end, module/endmodule, ...). Returned as
+    /// (startLine, endLine) pairs so the LSP layer does not need the editor's
+    /// folding types. Empty when the file has not been parsed yet.
+    /// </summary>
+    internal IReadOnlyList<(int StartLine, int EndLine, string? Name)> GetFoldingRanges()
+    {
+        EnsureBuilt();
+        List<(int, int, string?)> result = new();
+        CodeEditor2.CodeEditor.CodeDocument? doc = _parsedDocument?.CodeDocument;
+        if (doc == null) return result;
+
+        foreach (AvaloniaEdit.Folding.NewFolding folding in doc.Foldings.Foldings)
+        {
+            int startLine = doc.GetLineAt(folding.StartOffset);
+            // the fold ends on the line of the last character inside the region
+            int endIndex = folding.EndOffset - 1;
+            if (endIndex < folding.StartOffset) endIndex = folding.StartOffset;
+            if (endIndex > doc.Length) endIndex = doc.Length;
+            int endLine = doc.GetLineAt(endIndex);
+            if (endLine <= startLine) continue;   // single-line region: nothing to fold
+            result.Add((startLine, endLine, string.IsNullOrEmpty(folding.Name) ? null : folding.Name));
+        }
+        return result;
+    }
+
+    /// <summary>
     /// Runs the real Verilog parser through the plugin's UI-free
     /// CoreBridge.ParseEngine and materialises declarations and references
     /// as InMemoryElements so definition / references / outline queries
@@ -1642,6 +1696,24 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     {
         EnsureBuilt();
         return _byName.TryGetValue(name, out var list) ? list : new List<InMemoryElement>();
+    }
+
+    /// <summary>
+    /// Every declaration element in this file (references excluded), for
+    /// workspace/symbol. Empty until the file has been parsed.
+    /// </summary>
+    internal List<InMemoryElement> GetDeclarationElements()
+    {
+        EnsureBuilt();
+        List<InMemoryElement> result = new();
+        foreach (List<InMemoryElement> list in _byName.Values)
+        {
+            foreach (InMemoryElement e in list)
+            {
+                if (!e.IsReference) result.Add(e);
+            }
+        }
+        return result;
     }
 
     /// <summary>First declaration element with the given name in this file (project fallback handled by the project).</summary>

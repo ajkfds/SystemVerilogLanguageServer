@@ -1339,32 +1339,16 @@ public sealed partial class LspHandler
     /// </summary>
     private object? HandleHierarchy(JsonElement parameters, CancellationToken cancellationToken)
     {
-        // nodePath = sequence of child indexes from the workspace root
-        List<int> nodePath = new();
-        if (parameters.TryGetProperty("nodePath", out var pathElement)
-            && pathElement.ValueKind == JsonValueKind.Array)
+        // The node to expand is identified by an opaque token the client echoes
+        // back verbatim (see ExpandToken). A missing token means "the workspace
+        // root", i.e. the top level of the tree.
+        string? tokenText = null;
+        if (parameters.TryGetProperty("expandToken", out var tokenElement)
+            && tokenElement.ValueKind == JsonValueKind.String)
         {
-            foreach (JsonElement e in pathElement.EnumerateArray())
-            {
-                if (e.ValueKind == JsonValueKind.Number) nodePath.Add(e.GetInt32());
-            }
+            tokenText = tokenElement.GetString();
         }
-
-        // file of the node being expanded (null for the workspace root)
-        string? fileUri = null;
-        if (parameters.TryGetProperty("uri", out var uriElement) && uriElement.ValueKind == JsonValueKind.String)
-        {
-            // normalise to the scan form so the file is looked up as the same
-            // InMemoryFile the workspace registered (see NormalizeUri)
-            fileUri = NormalizeUri(uriElement.GetString() ?? string.Empty);
-        }
-
-        // folder of the node being expanded (top level / folder nodes)
-        string? folderPath = null;
-        if (parameters.TryGetProperty("folderPath", out var folderElement) && folderElement.ValueKind == JsonValueKind.String)
-        {
-            folderPath = folderElement.GetString();
-        }
+        ExpandToken.Payload? token = ExpandToken.Decode(tokenText);
 
         InMemoryProject project = _core.GetOrCreateProject("default");
 
@@ -1380,8 +1364,7 @@ public sealed partial class LspHandler
         // never ran and the tree would only ever list the open documents. The
         // directory of any known document is a good enough root to scan once so
         // the whole project appears.
-        if (nodePath.Count == 0 && string.IsNullOrEmpty(fileUri) && string.IsNullOrEmpty(folderPath)
-            && _workspaceRoots.Count == 0)
+        if (token == null && _workspaceRoots.Count == 0)
         {
             EnsureWorkspaceRootFromKnownFiles(project);
         }
@@ -1390,34 +1373,38 @@ public sealed partial class LspHandler
         // the request is answered with whatever could be listed.
         try
         {
-            if (!string.IsNullOrEmpty(folderPath))
+            switch (token?.Kind)
             {
-                // expand a workspace folder
-                return new HierarchyResult { Nodes = BuildFolderNodes(project, folderPath) };
-            }
+                case ExpandToken.TokenKind.Folder:
+                    return new HierarchyResult { Nodes = BuildFolderNodes(project, token.FolderPath ?? string.Empty) };
 
-            if (nodePath.Count == 0 && string.IsNullOrEmpty(fileUri))
-            {
-                // top level: the whole workspace (folder tree + files)
-                return new HierarchyResult { Nodes = BuildWorkspaceNodes(project) };
-            }
+                case ExpandToken.TokenKind.File:
+                {
+                    string fileUri = NormalizeUri(token.Uri ?? string.Empty);
+                    InMemoryFile? file = TryLoadFileFromDisk(project, fileUri);
+                    if (file == null) return new HierarchyResult { Nodes = new List<HierarchyNode>() };
+                    return new HierarchyResult { Nodes = BuildFileNodes(file, Array.Empty<string>()) };
+                }
 
-            if (string.IsNullOrEmpty(fileUri))
-            {
-                return new HierarchyResult { Nodes = new List<HierarchyNode>() };
-            }
+                case ExpandToken.TokenKind.Instance:
+                {
+                    string fileUri = NormalizeUri(token.Uri ?? string.Empty);
+                    InMemoryFile? file = TryLoadFileFromDisk(project, fileUri);
+                    if (file == null) return new HierarchyResult { Nodes = new List<HierarchyNode>() };
+                    return new HierarchyResult
+                    {
+                        Nodes = BuildFileNodes(file, token.InstancePath ?? Array.Empty<string>()),
+                    };
+                }
 
-            InMemoryFile? file = TryLoadFileFromDisk(project, fileUri);
-            if (file == null)
-            {
-                return new HierarchyResult { Nodes = new List<HierarchyNode>() };
+                default:
+                    // no token (or an unknown one): the workspace top level
+                    return new HierarchyResult { Nodes = BuildWorkspaceNodes(project) };
             }
-
-            return new HierarchyResult { Nodes = BuildFileNodes(file, nodePath) };
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            Console.Error.WriteLine($"rtl/hierarchy failed for '{folderPath ?? fileUri}': {ex.Message}");
+            Console.Error.WriteLine($"rtl/hierarchy failed: {ex.Message}");
             return new HierarchyResult { Nodes = new List<HierarchyNode>() };
         }
     }
@@ -1468,6 +1455,7 @@ public sealed partial class LspHandler
                     Tooltip = root,
                     FsPath = root,
                     DirPath = root,
+                    ExpandToken = ExpandToken.ForFolder(root),
                 });
             }
             roots.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
@@ -1582,6 +1570,7 @@ public sealed partial class LspHandler
                 Tooltip = childFolderPath,
                 FsPath = sub,
                 DirPath = sub,
+                ExpandToken = ExpandToken.ForFolder(childFolderPath),
             });
         }
 
@@ -1612,6 +1601,7 @@ public sealed partial class LspHandler
                 Tooltip = uri,
                 FsPath = path,
                 DirPath = Path.GetDirectoryName(path),
+                ExpandToken = hasChildren ? ExpandToken.ForFile(uri) : null,
             });
         }
 
@@ -1675,13 +1665,13 @@ public sealed partial class LspHandler
     /// given file. Works purely on the lazily built symbol list so the tree does
     /// not have to be materialised ahead of time.
     /// </summary>
-    private static List<HierarchyNode> BuildFileNodes(InMemoryFile file, List<int> nodePath)
+    private static List<HierarchyNode> BuildFileNodes(InMemoryFile file, IReadOnlyList<string> instancePath)
     {
         // The editor's NavigatePanel update code resolves the children of the
-        // node being expanded (an empty nodePath means "the first level of this
+        // node being expanded (an empty path means "the first level of this
         // file"), so the tree is built lazily exactly like the editor's.
         List<HierarchyNode> result = new();
-        foreach (HierarchyNodeDescriptor child in file.GetHierarchyChildren(nodePath))
+        foreach (HierarchyNodeDescriptor child in file.GetHierarchyChildren(instancePath))
         {
             result.Add(new HierarchyNode
             {
@@ -1703,6 +1693,10 @@ public sealed partial class LspHandler
                 InstancePath = child.InstancePath,
                 FsPath = child.FsPath,
                 DirPath = child.DirPath,
+                // opaque token for the next expansion (null for leaves)
+                ExpandToken = child.HasChildren && !string.IsNullOrEmpty(child.Uri)
+                    ? ExpandToken.ForInstance(child.Uri!, child.InstancePathSegments)
+                    : null,
             });
         }
         return result;

@@ -704,7 +704,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// relies on.
     /// </para>
     /// </summary>
-    internal List<HierarchyNodeDescriptor> GetHierarchyChildren(List<int> nodePath)
+    internal List<HierarchyNodeDescriptor> GetHierarchyChildren(IReadOnlyList<string> instancePath)
     {
         EnsureBuilt();
         List<HierarchyNodeDescriptor> result = new();
@@ -716,26 +716,36 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         // Walk down to the item being expanded, running the editor's Updater on
         // each level so its Items collection is populated (the editor does the
         // same lazily when a node is expanded).
+        //
+        // The path is a chain of child NAMES, not indexes: an index would point
+        // at a different node as soon as a sibling is added or removed between
+        // two requests, which is exactly what the opaque expand token has to
+        // survive.
         CodeEditor2.Data.Item current = pluginFile;
-        // readable instance path of the node being expanded ("u_mid.u_leaf"),
-        // so each child's path is just parent + "." + label
-        string parentInstancePath = string.Empty;
-        foreach (int index in nodePath)
+        List<string> parentSegments = new();
+        foreach (string segment in instancePath)
         {
             List<CodeEditor2.Data.Item> children = GetUpdatedChildren(current);
-            if (index < 0 || index >= children.Count) return result;
-            current = children[index];
-            parentInstancePath = string.IsNullOrEmpty(parentInstancePath)
-                ? current.Name
-                : parentInstancePath + "." + current.Name;
+            CodeEditor2.Data.Item? next = null;
+            foreach (CodeEditor2.Data.Item candidate in children)
+            {
+                if (string.Equals(candidate.Name, segment, StringComparison.Ordinal))
+                {
+                    next = candidate;
+                    break;
+                }
+            }
+            if (next == null) return result;   // stale token: answer with nothing
+            current = next;
+            parentSegments.Add(next.Name);
         }
 
         foreach (CodeEditor2.Data.Item child in GetUpdatedChildren(current))
         {
             HierarchyNodeDescriptor descriptor = CreateDescriptor(child);
-            descriptor.InstancePath = string.IsNullOrEmpty(parentInstancePath)
-                ? child.Name
-                : parentInstancePath + "." + child.Name;
+            descriptor.InstancePathSegments.AddRange(parentSegments);
+            descriptor.InstancePathSegments.Add(child.Name);
+            descriptor.InstancePath = string.Join(".", descriptor.InstancePathSegments);
             result.Add(descriptor);
         }
         return result;

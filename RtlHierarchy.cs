@@ -107,6 +107,15 @@ namespace SystemVerilogLanguageServer
         /// </summary>
         [JsonPropertyName("dirPath")]
         public string? DirPath { get; set; }
+
+        /// <summary>
+        /// Opaque token identifying this node for the next expansion request.
+        /// The client stores it and echoes it back verbatim as
+        /// <c>expandToken</c>; it never parses it. Null for leaf nodes (nothing
+        /// to expand).
+        /// </summary>
+        [JsonPropertyName("expandToken")]
+        public string? ExpandToken { get; set; }
     }
 
     internal static class HierarchyNodeKind
@@ -138,6 +147,13 @@ namespace SystemVerilogLanguageServer
 
         /// <summary>Readable instance path ("u_mid.u_leaf"); empty for files.</summary>
         public string? InstancePath { get; set; }
+
+        /// <summary>
+        /// Instance path as name segments from the file root ("u_mid", "u_leaf").
+        /// Used to build the opaque expand token: names stay valid when a
+        /// sibling is added or removed, unlike the old index sequence.
+        /// </summary>
+        public List<string> InstancePathSegments { get; } = new();
 
         /// <summary>Absolute path of the file the node represents.</summary>
         public string? FsPath { get; set; }

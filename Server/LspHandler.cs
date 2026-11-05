@@ -94,6 +94,7 @@ public sealed partial class LspHandler
         // "$/" free-for-all namespace or a vendor prefix; "rtl/" is ours.
         _requestHandlers["rtl/hierarchy"] = HandleHierarchy;
         _requestHandlers["rtl/reparse"] = HandleReparse;
+        _requestHandlers["rtl/theme"] = HandleTheme;
 
         _notificationHandlers["initialized"] = HandleInitialized;
         _notificationHandlers["exit"] = HandleExit;
@@ -168,11 +169,9 @@ public sealed partial class LspHandler
                 {
                     Legend = new SemanticTokensLegend
                     {
-                        TokenTypes = new List<string>
-                        {
-                            "keyword", "comment", "string", "number", "macro",
-                            "function", "type", "variable", "property", "parameter", "register", "identifier",
-                        },
+                        // shared with rtl/theme so the legend and the colour
+                        // rules can never drift apart
+                        TokenTypes = new List<string>(SemanticTokenTypes),
                         TokenModifiers = new List<string>(),
                     },
                     Full = true,
@@ -2014,6 +2013,16 @@ public sealed class PublishDiagnosticsParams
 public sealed class HierarchyInvalidatedParams
 {
     [JsonPropertyName("reason")] public string? Reason { get; set; }
+}
+
+/// <summary>
+/// Body of the <c>rtl/theme</c> request: the semantic-token colour rules
+/// (token type → "#RRGGBB") plus the legend the client must use.
+/// </summary>
+public sealed class ThemeResult
+{
+    [JsonPropertyName("rules")] public Dictionary<string, string> Rules { get; set; } = new();
+    [JsonPropertyName("tokenTypes")] public List<string> TokenTypes { get; set; } = new();
 }
 
 public sealed class Diagnostic

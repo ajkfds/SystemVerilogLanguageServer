@@ -717,16 +717,26 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         // each level so its Items collection is populated (the editor does the
         // same lazily when a node is expanded).
         CodeEditor2.Data.Item current = pluginFile;
+        // readable instance path of the node being expanded ("u_mid.u_leaf"),
+        // so each child's path is just parent + "." + label
+        string parentInstancePath = string.Empty;
         foreach (int index in nodePath)
         {
             List<CodeEditor2.Data.Item> children = GetUpdatedChildren(current);
             if (index < 0 || index >= children.Count) return result;
             current = children[index];
+            parentInstancePath = string.IsNullOrEmpty(parentInstancePath)
+                ? current.Name
+                : parentInstancePath + "." + current.Name;
         }
 
         foreach (CodeEditor2.Data.Item child in GetUpdatedChildren(current))
         {
-            result.Add(CreateDescriptor(child));
+            HierarchyNodeDescriptor descriptor = CreateDescriptor(child);
+            descriptor.InstancePath = string.IsNullOrEmpty(parentInstancePath)
+                ? child.Name
+                : parentInstancePath + "." + child.Name;
+            result.Add(descriptor);
         }
         return result;
     }
@@ -869,7 +879,39 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             node.StartLine = GetLineOfIndex(inst.BeginIndexReference.Index);
             node.StartCharacter = GetCharacterOfIndex(inst.BeginIndexReference.Index);
         }
+
+        // absolute paths for the file operations (Add / Delete / Open in
+        // Explorer). The item's RelativePath is workspace-relative, so resolve
+        // it against the workspace roots here instead of in the client.
+        string? fsPath = ResolveItemAbsolutePath(item);
+        node.FsPath = fsPath;
+        if (!string.IsNullOrEmpty(fsPath))
+        {
+            node.DirPath = Path.GetDirectoryName(fsPath);
+        }
         return node;
+    }
+
+    /// <summary>
+    /// Absolute path of the file behind a NavigatePanel item, or null when it
+    /// cannot be resolved (no workspace root yet). Used for the file operations
+    /// so the client never has to join paths itself.
+    /// </summary>
+    private string? ResolveItemAbsolutePath(CodeEditor2.Data.Item item)
+    {
+        string? relativePath = item.RelativePath;
+        if (string.IsNullOrEmpty(relativePath)) return null;
+
+        InMemoryProject? project = ProjectOwner;
+        if (project == null) return null;
+
+        string normalized = relativePath.Replace('\\', '/').TrimStart('/');
+        foreach (string root in project.WorkspaceRoots)
+        {
+            string candidate = Path.Combine(root, normalized.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     /// <summary>

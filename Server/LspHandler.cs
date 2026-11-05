@@ -1462,6 +1462,12 @@ public sealed partial class LspHandler
                     Kind = HierarchyNodeKind.Folder,
                     FolderPath = root,
                     HasChildren = true,
+                    Icon = "folder",
+                    ContextValue = "rtlFolder",
+                    Collapsible = "collapsed",
+                    Tooltip = root,
+                    FsPath = root,
+                    DirPath = root,
                 });
             }
             roots.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
@@ -1563,12 +1569,19 @@ public sealed partial class LspHandler
             string name = Path.GetFileName(sub);
             if (SkippedDirectoryNames.Contains(name)) continue;
 
+            string childFolderPath = string.IsNullOrEmpty(basePath) ? name : basePath + "/" + name;
             nodes.Add(new HierarchyNode
             {
                 Label = name,
                 Kind = HierarchyNodeKind.Folder,
-                FolderPath = string.IsNullOrEmpty(basePath) ? name : basePath + "/" + name,
+                FolderPath = childFolderPath,
                 HasChildren = true,
+                Icon = "folder",
+                ContextValue = "rtlFolder",
+                Collapsible = "collapsed",
+                Tooltip = childFolderPath,
+                FsPath = sub,
+                DirPath = sub,
             });
         }
 
@@ -1593,6 +1606,12 @@ public sealed partial class LspHandler
                 Kind = HierarchyNodeKind.File,
                 Detail = GetRelativePath(project, path) ?? name,
                 HasChildren = hasChildren,
+                Icon = "file",
+                ContextValue = "rtlFile",
+                Collapsible = hasChildren ? "collapsed" : "none",
+                Tooltip = uri,
+                FsPath = path,
+                DirPath = Path.GetDirectoryName(path),
             });
         }
 
@@ -1673,6 +1692,17 @@ public sealed partial class LspHandler
                 StartLine = child.StartLine,
                 StartCharacter = child.StartCharacter,
                 HasChildren = child.HasChildren,
+                // presentation metadata: the client only maps it onto the
+                // VS Code TreeItem (no derivation on the client side)
+                Icon = "symbol-class",
+                ContextValue = "rtlInstance",
+                Collapsible = child.HasChildren ? "collapsed" : "none",
+                Tooltip = string.IsNullOrEmpty(child.Detail)
+                    ? child.InstancePath
+                    : $"{child.InstancePath}  ({child.Detail})",
+                InstancePath = child.InstancePath,
+                FsPath = child.FsPath,
+                DirPath = child.DirPath,
             });
         }
         return result;

@@ -53,6 +53,60 @@ namespace SystemVerilogLanguageServer
         /// <summary>True when the node has children (expandable).</summary>
         [JsonPropertyName("hasChildren")]
         public bool HasChildren { get; set; }
+
+        // ---- presentation metadata (Phase 1: the server decides, the client
+        // ---- only maps it onto the VS Code TreeItem) ----
+
+        /// <summary>
+        /// VS Code ThemeIcon id ("folder" / "file" / "symbol-class" /
+        /// "warning"). The client passes it straight to <c>new ThemeIcon(id)</c>.
+        /// </summary>
+        [JsonPropertyName("icon")]
+        public string? Icon { get; set; }
+
+        /// <summary>
+        /// <c>TreeItem.contextValue</c> ("rtlFolder" / "rtlFile" /
+        /// "rtlInstance" / "rtlInfo"). Drives the right-click menu <c>when</c>
+        /// clauses, so the client never has to derive it from <see cref="Kind"/>.
+        /// </summary>
+        [JsonPropertyName("contextValue")]
+        public string? ContextValue { get; set; }
+
+        /// <summary>
+        /// <c>TreeItemCollapsibleState</c> as a string: "none" or "collapsed".
+        /// </summary>
+        [JsonPropertyName("collapsible")]
+        public string? Collapsible { get; set; }
+
+        /// <summary>
+        /// <c>TreeItem.tooltip</c>. Built here so the client does not have to
+        /// concatenate the instance path and the type.
+        /// </summary>
+        [JsonPropertyName("tooltip")]
+        public string? Tooltip { get; set; }
+
+        /// <summary>
+        /// Readable instance path ("u_mid.u_leaf") for "Copy Instance Path".
+        /// Empty for folder / file nodes.
+        /// </summary>
+        [JsonPropertyName("instancePath")]
+        public string? InstancePath { get; set; }
+
+        /// <summary>
+        /// Absolute path of the file the node represents (file / instance
+        /// nodes). Used by the file operations (Add / Delete / Open in
+        /// Explorer) so the client does not have to compute it.
+        /// </summary>
+        [JsonPropertyName("fsPath")]
+        public string? FsPath { get; set; }
+
+        /// <summary>
+        /// Absolute directory the node lives in, for "Add Folder" / "Add Blank
+        /// File": a folder node is its own directory, a file / instance uses
+        /// the directory of its source file.
+        /// </summary>
+        [JsonPropertyName("dirPath")]
+        public string? DirPath { get; set; }
     }
 
     internal static class HierarchyNodeKind
@@ -81,6 +135,15 @@ namespace SystemVerilogLanguageServer
         /// are requested (expansion is lazy, like the editor's NavigatePanel).
         /// </summary>
         public bool HasChildren { get; set; }
+
+        /// <summary>Readable instance path ("u_mid.u_leaf"); empty for files.</summary>
+        public string? InstancePath { get; set; }
+
+        /// <summary>Absolute path of the file the node represents.</summary>
+        public string? FsPath { get; set; }
+
+        /// <summary>Absolute directory the node lives in (for Add operations).</summary>
+        public string? DirPath { get; set; }
 
         public List<HierarchyNodeDescriptor> Children { get; } = new();
     }

@@ -18,7 +18,7 @@ namespace SystemVerilogLanguageServer.Server;
 /// server cache everything in memory and the round-trip to the parser
 /// (if any) is the responsibility of the adapter, not the dispatcher.
 /// </summary>
-public sealed class LspHandler
+public sealed partial class LspHandler
 {
     private readonly InMemorySystemVerilogCore _core;
     private readonly Dictionary<string, Func<JsonElement, CancellationToken, object?>> _requestHandlers = new();
@@ -63,6 +63,32 @@ public sealed class LspHandler
         _requestHandlers["textDocument/hover"] = HandleHover;
         _requestHandlers["textDocument/completion"] = HandleCompletion;
         _requestHandlers["textDocument/semanticTokens/full"] = HandleSemanticTokens;
+
+        // ---- standard LSP features wired but not implemented yet ----
+        // The handlers exist so the client can call them and the capability is
+        // advertised; each returns an empty result until the C# implementation
+        // lands (see LspHandler.Unimplemented.cs).
+        _requestHandlers["textDocument/formatting"] = HandleFormatting;
+        _requestHandlers["textDocument/rangeFormatting"] = HandleRangeFormatting;
+        _requestHandlers["textDocument/onTypeFormatting"] = HandleOnTypeFormatting;
+        _requestHandlers["textDocument/rename"] = HandleRename;
+        _requestHandlers["textDocument/prepareRename"] = HandlePrepareRename;
+        _requestHandlers["textDocument/codeAction"] = HandleCodeAction;
+        _requestHandlers["textDocument/codeLens"] = HandleCodeLens;
+        _requestHandlers["textDocument/signatureHelp"] = HandleSignatureHelp;
+        _requestHandlers["textDocument/completionItem/resolve"] = HandleCompletionResolve;
+        _requestHandlers["textDocument/inlayHint"] = HandleInlayHint;
+        _requestHandlers["textDocument/declaration"] = HandleDeclaration;
+        _requestHandlers["textDocument/typeDefinition"] = HandleTypeDefinition;
+        _requestHandlers["textDocument/implementation"] = HandleImplementation;
+        _requestHandlers["textDocument/documentHighlight"] = HandleDocumentHighlight;
+        _requestHandlers["textDocument/foldingRange"] = HandleFoldingRange;
+        _requestHandlers["textDocument/selectionRange"] = HandleSelectionRange;
+        _requestHandlers["textDocument/documentLink"] = HandleDocumentLink;
+        _requestHandlers["textDocument/semanticTokens/range"] = HandleSemanticTokensRange;
+        _requestHandlers["workspace/symbol"] = HandleWorkspaceSymbol;
+        _requestHandlers["workspace/executeCommand"] = HandleExecuteCommand;
+
         // custom (non-standard) requests used by the VS Code tree view.
         // LSP allows implementation-defined methods as long as they use the
         // "$/" free-for-all namespace or a vendor prefix; "rtl/" is ours.
@@ -76,6 +102,11 @@ public sealed class LspHandler
         _notificationHandlers["textDocument/didChange"] = HandleDidChange;
         _notificationHandlers["textDocument/didClose"] = HandleDidClose;
         _notificationHandlers["textDocument/didSave"] = HandleDidSave;
+
+        // ---- standard LSP notifications wired but not implemented yet ----
+        _notificationHandlers["workspace/didChangeWatchedFiles"] = HandleDidChangeWatchedFiles;
+        _notificationHandlers["workspace/didChangeConfiguration"] = HandleDidChangeConfiguration;
+        _notificationHandlers["textDocument/willSave"] = HandleWillSave;
     }
 
     public bool TryHandleRequest(string method, JsonElement parameters, CancellationToken cancellationToken, out object? result)
@@ -145,7 +176,31 @@ public sealed class LspHandler
                         TokenModifiers = new List<string>(),
                     },
                     Full = true,
+                    Range = true,
                 },
+
+                // ---- standard LSP features wired but not implemented yet ----
+                // Advertised so the client registers the providers; the handlers
+                // return empty results until the C# implementation lands.
+                DocumentFormattingProvider = true,
+                DocumentRangeFormattingProvider = true,
+                RenameProvider = true,
+                CodeActionProvider = true,
+                CodeLensProvider = new CodeLensCapability(),
+                SignatureHelpProvider = new SignatureHelpCapability
+                {
+                    TriggerCharacters = new List<string> { "(", "," },
+                },
+                InlayHintProvider = true,
+                DeclarationProvider = true,
+                TypeDefinitionProvider = true,
+                ImplementationProvider = true,
+                DocumentHighlightProvider = true,
+                FoldingRangeProvider = true,
+                SelectionRangeProvider = true,
+                DocumentLinkProvider = new DocumentLinkCapability(),
+                WorkspaceSymbolProvider = true,
+                ExecuteCommandProvider = new ExecuteCommandCapability(),
             },
             ServerInfo = new ServerInfo { Name = "SystemVerilogLanguageServer", Version = "0.1.0" },
         };
@@ -1763,6 +1818,45 @@ public sealed class ServerCapabilities
     [JsonPropertyName("documentSymbolProvider")] public bool DocumentSymbolProvider { get; set; }
     [JsonPropertyName("completionProvider")] public CompletionCapability? CompletionProvider { get; set; }
     [JsonPropertyName("semanticTokensProvider")] public SemanticTokensCapability? SemanticTokensProvider { get; set; }
+
+    // ---- standard LSP features wired but not implemented yet ----
+    [JsonPropertyName("documentFormattingProvider")] public bool DocumentFormattingProvider { get; set; }
+    [JsonPropertyName("documentRangeFormattingProvider")] public bool DocumentRangeFormattingProvider { get; set; }
+    [JsonPropertyName("renameProvider")] public bool RenameProvider { get; set; }
+    [JsonPropertyName("codeActionProvider")] public bool CodeActionProvider { get; set; }
+    [JsonPropertyName("codeLensProvider")] public CodeLensCapability? CodeLensProvider { get; set; }
+    [JsonPropertyName("signatureHelpProvider")] public SignatureHelpCapability? SignatureHelpProvider { get; set; }
+    [JsonPropertyName("inlayHintProvider")] public bool InlayHintProvider { get; set; }
+    [JsonPropertyName("declarationProvider")] public bool DeclarationProvider { get; set; }
+    [JsonPropertyName("typeDefinitionProvider")] public bool TypeDefinitionProvider { get; set; }
+    [JsonPropertyName("implementationProvider")] public bool ImplementationProvider { get; set; }
+    [JsonPropertyName("documentHighlightProvider")] public bool DocumentHighlightProvider { get; set; }
+    [JsonPropertyName("foldingRangeProvider")] public bool FoldingRangeProvider { get; set; }
+    [JsonPropertyName("selectionRangeProvider")] public bool SelectionRangeProvider { get; set; }
+    [JsonPropertyName("documentLinkProvider")] public DocumentLinkCapability? DocumentLinkProvider { get; set; }
+    [JsonPropertyName("workspaceSymbolProvider")] public bool WorkspaceSymbolProvider { get; set; }
+    [JsonPropertyName("executeCommandProvider")] public ExecuteCommandCapability? ExecuteCommandProvider { get; set; }
+}
+
+public sealed class CodeLensCapability
+{
+    [JsonPropertyName("resolveProvider")] public bool ResolveProvider { get; set; }
+}
+
+public sealed class SignatureHelpCapability
+{
+    [JsonPropertyName("triggerCharacters")] public List<string>? TriggerCharacters { get; set; }
+    [JsonPropertyName("retriggerCharacters")] public List<string>? RetriggerCharacters { get; set; }
+}
+
+public sealed class DocumentLinkCapability
+{
+    [JsonPropertyName("resolveProvider")] public bool ResolveProvider { get; set; }
+}
+
+public sealed class ExecuteCommandCapability
+{
+    [JsonPropertyName("commands")] public List<string> Commands { get; set; } = new();
 }
 
 public sealed class CompletionCapability
@@ -1858,6 +1952,7 @@ public sealed class SemanticTokensCapability
 {
     [JsonPropertyName("legend")] public SemanticTokensLegend Legend { get; set; } = new();
     [JsonPropertyName("full")] public bool Full { get; set; }
+    [JsonPropertyName("range")] public bool Range { get; set; }
 }
 
 public sealed class SemanticTokensLegend
@@ -1875,4 +1970,98 @@ public sealed class MarkupContent
 {
     [JsonPropertyName("kind")] public string Kind { get; set; } = "plaintext";
     [JsonPropertyName("value")] public string Value { get; set; } = string.Empty;
+}
+
+// ---------------------- DTOs for the not-yet-implemented features ----------------------
+// The handlers in LspHandler.Unimplemented.cs return empty collections of these
+// types, so the wire shape is already correct when the implementation lands.
+
+public sealed class TextEdit
+{
+    [JsonPropertyName("range")] public LspRange Range { get; set; } = new();
+    [JsonPropertyName("newText")] public string NewText { get; set; } = string.Empty;
+}
+
+public sealed class CodeAction
+{
+    [JsonPropertyName("title")] public string Title { get; set; } = string.Empty;
+    [JsonPropertyName("kind")] public string? Kind { get; set; }
+    [JsonPropertyName("diagnostics")] public List<Diagnostic>? Diagnostics { get; set; }
+    [JsonPropertyName("edit")] public WorkspaceEdit? Edit { get; set; }
+}
+
+public sealed class WorkspaceEdit
+{
+    [JsonPropertyName("changes")] public Dictionary<string, List<TextEdit>>? Changes { get; set; }
+}
+
+public sealed class CodeLens
+{
+    [JsonPropertyName("range")] public LspRange Range { get; set; } = new();
+    [JsonPropertyName("command")] public Command? Command { get; set; }
+}
+
+public sealed class Command
+{
+    [JsonPropertyName("title")] public string Title { get; set; } = string.Empty;
+    [JsonPropertyName("command")] public string CommandName { get; set; } = string.Empty;
+    [JsonPropertyName("arguments")] public List<object>? Arguments { get; set; }
+}
+
+public sealed class SignatureHelp
+{
+    [JsonPropertyName("signatures")] public List<SignatureInformation> Signatures { get; set; } = new();
+    [JsonPropertyName("activeSignature")] public int ActiveSignature { get; set; }
+    [JsonPropertyName("activeParameter")] public int ActiveParameter { get; set; }
+}
+
+public sealed class SignatureInformation
+{
+    [JsonPropertyName("label")] public string Label { get; set; } = string.Empty;
+    [JsonPropertyName("documentation")] public MarkupContent? Documentation { get; set; }
+    [JsonPropertyName("parameters")] public List<ParameterInformation>? Parameters { get; set; }
+}
+
+public sealed class ParameterInformation
+{
+    [JsonPropertyName("label")] public string Label { get; set; } = string.Empty;
+}
+
+public sealed class InlayHint
+{
+    [JsonPropertyName("position")] public LspPosition Position { get; set; } = new();
+    [JsonPropertyName("label")] public string Label { get; set; } = string.Empty;
+    [JsonPropertyName("kind")] public int? Kind { get; set; }
+}
+
+public sealed class DocumentHighlight
+{
+    [JsonPropertyName("range")] public LspRange Range { get; set; } = new();
+    [JsonPropertyName("kind")] public int? Kind { get; set; }
+}
+
+public sealed class FoldingRange
+{
+    [JsonPropertyName("startLine")] public int StartLine { get; set; }
+    [JsonPropertyName("endLine")] public int EndLine { get; set; }
+    [JsonPropertyName("kind")] public string? Kind { get; set; }
+}
+
+public sealed class SelectionRange
+{
+    [JsonPropertyName("range")] public LspRange Range { get; set; } = new();
+    [JsonPropertyName("parent")] public SelectionRange? Parent { get; set; }
+}
+
+public sealed class DocumentLink
+{
+    [JsonPropertyName("range")] public LspRange Range { get; set; } = new();
+    [JsonPropertyName("target")] public string? Target { get; set; }
+}
+
+public sealed class WorkspaceSymbol
+{
+    [JsonPropertyName("name")] public string Name { get; set; } = string.Empty;
+    [JsonPropertyName("kind")] public SymbolKind Kind { get; set; }
+    [JsonPropertyName("location")] public Location Location { get; set; } = new();
 }

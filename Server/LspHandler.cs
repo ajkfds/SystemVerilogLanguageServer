@@ -709,6 +709,8 @@ public sealed partial class LspHandler
         // plugin item tree (used by `include resolution) must be re-keyed
         project.RebuildPluginItemTree();
         RescanWorkspaceFiles(project);
+        // the workspace layout changed: the tree must redraw
+        PushHierarchyInvalidated("didChangeWorkspaceFolders");
     }
 
     private void HandleExit(JsonElement parameters, CancellationToken cancellationToken)
@@ -793,6 +795,10 @@ public sealed partial class LspHandler
         // request for minutes (the tree would render empty). Files are loaded
         // and parsed lazily when a node is expanded (see TryLoadFileFromDisk).
         Console.Error.WriteLine($"workspace root inferred from opened file: {directory}");
+
+        // the tree could not be built before the root was known: tell the
+        // client to redraw now that the workspace is scannable
+        PushHierarchyInvalidated("workspaceRootInferred");
     }
 
     /// <summary>
@@ -823,6 +829,10 @@ public sealed partial class LspHandler
             // no eager scan / parse: the tree is built from the directory
             // listing and files are parsed lazily when expanded
             Console.Error.WriteLine($"workspace root inferred from known file: {directory}");
+
+            // the tree could not be built before the root was known: tell the
+            // client to redraw now that the workspace is scannable
+            PushHierarchyInvalidated("workspaceRootInferred");
             return;
         }
     }
@@ -977,6 +987,9 @@ public sealed partial class LspHandler
         }
         mem.Rebuild();
         PushDiagnostics(project, uri);
+        // a save can change the instance hierarchy (module signature, new
+        // instantiations), so let the client redraw the tree
+        PushHierarchyInvalidated("didSave");
     }
 
     private object? HandleDefinition(JsonElement parameters, CancellationToken cancellationToken)
@@ -1731,6 +1744,36 @@ public sealed partial class LspHandler
         });
     }
 
+    /// <summary>
+    /// Pushes <c>rtl/hierarchyInvalidated</c> so the client redraws the RTL
+    /// Hierarchy tree without waiting for the user to press refresh.
+    ///
+    /// <para>
+    /// This is a non-standard notification (vendor prefix <c>rtl/</c>, like
+    /// <c>rtl/hierarchy</c> / <c>rtl/reparse</c>), so the standard LSP surface
+    /// is untouched. The client only has to redraw: the tree is fetched lazily
+    /// per expanded node, so no payload is needed here.
+    /// </para>
+    ///
+    /// <para>
+    /// Called from the message loop (didSave / watched files / workspace folder
+    /// changes), so the writer is only ever used from the single LSP loop and
+    /// no interleaving can occur. A no-op until the host injects
+    /// <see cref="NotificationSender"/>.
+    /// </para>
+    /// </summary>
+    private void PushHierarchyInvalidated(string reason)
+    {
+        Action<LspMessage>? sender = NotificationSender;
+        if (sender == null) return;
+
+        sender(new LspMessage
+        {
+            Method = "rtl/hierarchyInvalidated",
+            Params = new HierarchyInvalidatedParams { Reason = reason },
+        });
+    }
+
     // ---------------------- helpers ----------------------
 
     private bool TryGetFileAndIndex(JsonElement parameters, out ISystemVerilogFile file, out int index)
@@ -1937,6 +1980,16 @@ public sealed class PublishDiagnosticsParams
 {
     [JsonPropertyName("uri")] public string Uri { get; set; } = string.Empty;
     [JsonPropertyName("diagnostics")] public List<Diagnostic> Diagnostics { get; set; } = new();
+}
+
+/// <summary>
+/// Body of the <c>rtl/hierarchyInvalidated</c> notification. The client only
+/// needs to redraw the tree, so <see cref="Reason"/> is informational (it shows
+/// up in the extension log).
+/// </summary>
+public sealed class HierarchyInvalidatedParams
+{
+    [JsonPropertyName("reason")] public string? Reason { get; set; }
 }
 
 public sealed class Diagnostic

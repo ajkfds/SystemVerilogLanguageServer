@@ -556,6 +556,8 @@ public sealed partial class LspHandler
     {
         InMemoryProject project = _core.GetOrCreateProject("default");
         RescanWorkspaceFiles(project);
+        // files appeared / disappeared: the tree must redraw
+        PushHierarchyInvalidated("didChangeWatchedFiles");
     }
 
     /// <summary>workspace/didChangeConfiguration — settings changed. Not handled yet.</summary>

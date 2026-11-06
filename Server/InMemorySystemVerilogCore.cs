@@ -522,6 +522,13 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     private readonly Dictionary<string, ISystemVerilogBuildingBlock> _buildingBlocks = new();
     private readonly List<ISystemVerilogNamedElement> _members = new();
     private readonly List<ISystemVerilogDiagnostic> _diagnostics = new();
+    /// <summary>
+    /// Guards <see cref="_diagnostics"/>. The list is written by the parse
+    /// thread (SetDiagnostics) and read by the hierarchy listing (which runs on
+    /// the LSP message loop), so an unguarded enumeration could throw
+    /// "Collection was modified" and fail the whole rtl/hierarchy request.
+    /// </summary>
+    private readonly object _diagnosticsLock = new();
     /// <summary>Manually registered symbols (AddSymbol); take precedence over parser output.</summary>
     private readonly List<ISystemVerilogNamedElement> _manualList = new();
     private bool _manualSymbols;
@@ -621,9 +628,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile
 
     private bool HasErrors()
     {
-        foreach (ISystemVerilogDiagnostic d in _diagnostics)
+        lock (_diagnosticsLock)
         {
-            if (d.Severity == SystemVerilogSeverity.Error) return true;
+            foreach (ISystemVerilogDiagnostic d in _diagnostics)
+            {
+                if (d.Severity == SystemVerilogSeverity.Error) return true;
+            }
         }
         return false;
     }
@@ -643,7 +653,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             _byName.Clear();
             _buildingBlocks.Clear();
             _members.Clear();
-            _diagnostics.Clear();
+            lock (_diagnosticsLock) { _diagnostics.Clear(); }
             _parsedDocument = null;
             _document = null;
             _built = false;
@@ -1035,11 +1045,20 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             case pluginVerilog.Data.VerilogModuleInstance module:
                 // the instantiated building block decides the icon, so an
                 // interface instantiated through the module path still shows
-                // the interface icon
-                return module.GetParentInstanciatiation()?.GetInstancedBuildingBlock()
-                    is pluginVerilog.Verilog.BuildingBlocks.Interface
-                    ? "symbol-interface"
-                    : "symbol-module";
+                // the interface icon. Resolving it can throw (the project
+                // property is missing while a cross-project instance is still
+                // unresolved), and an icon must never fail the tree listing.
+                try
+                {
+                    return module.GetParentInstanciatiation()?.GetInstancedBuildingBlock()
+                        is pluginVerilog.Verilog.BuildingBlocks.Interface
+                        ? "symbol-interface"
+                        : "symbol-module";
+                }
+                catch (Exception)
+                {
+                    return "symbol-module";
+                }
             case pluginVerilog.Data.InterfaceInstance:
                 return "symbol-interface";
             case pluginVerilog.Data.ImportedPackage:
@@ -1059,10 +1078,18 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     private static string? ResolveItemIconColor(CodeEditor2.Data.Item item)
     {
         if (item is not pluginVerilog.Data.IVerilogRelatedFile file) return null;
-        pluginVerilog.Verilog.ParsedDocument? parsed = file.VerilogParsedDocument;
-        if (parsed == null) return null;
-        if (parsed.ErrorCount > 0) return "errorForeground";
-        if (parsed.WarningCount > 0) return "editorWarning.foreground";
+        try
+        {
+            pluginVerilog.Verilog.ParsedDocument? parsed = file.VerilogParsedDocument;
+            if (parsed == null) return null;
+            if (parsed.ErrorCount > 0) return "errorForeground";
+            if (parsed.WarningCount > 0) return "editorWarning.foreground";
+        }
+        catch (Exception)
+        {
+            // an unresolved instance may not have a parse result yet; the
+            // colour is cosmetic, so never fail the listing over it
+        }
         return null;
     }
 
@@ -1865,13 +1892,50 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         return result;
     }
 
-    internal IReadOnlyList<ISystemVerilogDiagnostic> Diagnostics => _diagnostics;
+    /// <summary>
+    /// Snapshot of the current diagnostics. Returns a copy so callers can
+    /// enumerate it while the parse thread replaces the list (the hierarchy
+    /// listing reads this for every file in a directory).
+    /// </summary>
+    internal IReadOnlyList<ISystemVerilogDiagnostic> Diagnostics
+    {
+        get
+        {
+            lock (_diagnosticsLock)
+            {
+                return _diagnostics.ToArray();
+            }
+        }
+    }
 
     /// <summary>Replaces the diagnostic list after a (re)parse.</summary>
     internal void SetDiagnostics(IEnumerable<ISystemVerilogDiagnostic> diags)
     {
-        _diagnostics.Clear();
-        _diagnostics.AddRange(diags);
+        lock (_diagnosticsLock)
+        {
+            _diagnostics.Clear();
+            _diagnostics.AddRange(diags);
+        }
+    }
+
+    /// <summary>
+    /// Highest severity present in the current diagnostics, or null when the
+    /// file is clean. Used by the hierarchy listing to colour the file icon
+    /// without copying the whole diagnostic list.
+    /// </summary>
+    internal SystemVerilogSeverity? HighestDiagnosticSeverity()
+    {
+        lock (_diagnosticsLock)
+        {
+            SystemVerilogSeverity? highest = null;
+            foreach (ISystemVerilogDiagnostic d in _diagnostics)
+            {
+                if (d.Severity == SystemVerilogSeverity.Error) return SystemVerilogSeverity.Error;
+                if (d.Severity == SystemVerilogSeverity.Warning) highest = SystemVerilogSeverity.Warning;
+                else if (highest == null) highest = d.Severity;
+            }
+            return highest;
+        }
     }
 }
 

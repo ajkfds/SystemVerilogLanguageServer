@@ -1404,9 +1404,14 @@ public sealed partial class LspHandler
                     return new HierarchyResult { Nodes = BuildWorkspaceNodes(project) };
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex)
         {
-            Console.Error.WriteLine($"rtl/hierarchy failed: {ex.Message}");
+            // Any failure while building the tree must not blank the view: the
+            // client renders an empty tree when the request errors out, which
+            // looks like "the extension does not start". Log the full stack so
+            // the cause is visible in the extension log, and answer with an
+            // empty (but valid) result.
+            Console.Error.WriteLine($"rtl/hierarchy failed: {ex}");
             return new HierarchyResult { Nodes = new List<HierarchyNode>() };
         }
     }
@@ -1593,22 +1598,19 @@ public sealed partial class LspHandler
             // Flag files with errors / warnings the way the editor's
             // NavigatePanel does with its exclamation badge. Only already
             // parsed files are inspected: parsing every file in the listing
-            // would defeat the lazy expansion.
+            // would defeat the lazy expansion. HighestDiagnosticSeverity takes
+            // the file's own lock, so a background parse replacing the list
+            // cannot break the enumeration (which would fail the whole
+            // rtl/hierarchy request and blank the tree).
             string? iconColor = null;
             if (project.FindFile(uri) is InMemoryFile parsedFile)
             {
-                foreach (ISystemVerilogDiagnostic diagnostic in parsedFile.Diagnostics)
+                iconColor = parsedFile.HighestDiagnosticSeverity() switch
                 {
-                    if (diagnostic.Severity == SystemVerilogSeverity.Error)
-                    {
-                        iconColor = "errorForeground";
-                        break;
-                    }
-                    if (diagnostic.Severity == SystemVerilogSeverity.Warning)
-                    {
-                        iconColor = "editorWarning.foreground";
-                    }
-                }
+                    SystemVerilogSeverity.Error => "errorForeground",
+                    SystemVerilogSeverity.Warning => "editorWarning.foreground",
+                    _ => null,
+                };
             }
 
             nodes.Add(new HierarchyNode

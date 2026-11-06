@@ -58,11 +58,26 @@ namespace SystemVerilogLanguageServer
         // ---- only maps it onto the VS Code TreeItem) ----
 
         /// <summary>
-        /// VS Code ThemeIcon id ("folder" / "file" / "symbol-class" /
-        /// "warning"). The client passes it straight to <c>new ThemeIcon(id)</c>.
+        /// VS Code ThemeIcon (codicon) id: "folder" / "file" / "file-code" /
+        /// "symbol-class" / "symbol-interface" / "symbol-package" / "warning".
+        /// The client passes it straight to <c>new ThemeIcon(id, color)</c>.
+        ///
+        /// <para>
+        /// Codicons are used instead of the plugin's own SVG assets because
+        /// those are filled with a fixed dark grey (#4b4b4b) and would be
+        /// invisible on a dark VS Code theme; codicons follow the theme.
+        /// </para>
         /// </summary>
         [JsonPropertyName("icon")]
         public string? Icon { get; set; }
+
+        /// <summary>
+        /// Optional VS Code theme colour id for the icon ("errorForeground" /
+        /// "editorWarning.foreground"), used to flag a node whose file has
+        /// errors / warnings. Null means "use the theme's default icon colour".
+        /// </summary>
+        [JsonPropertyName("iconColor")]
+        public string? IconColor { get; set; }
 
         /// <summary>
         /// <c>TreeItem.contextValue</c> ("rtlFolder" / "rtlFile" /
@@ -160,6 +175,19 @@ namespace SystemVerilogLanguageServer
 
         /// <summary>Absolute directory the node lives in (for Add operations).</summary>
         public string? DirPath { get; set; }
+
+        /// <summary>
+        /// VS Code codicon id for the node, decided from the instantiated
+        /// building block kind (module / interface / package / include header).
+        /// </summary>
+        public string? Icon { get; set; }
+
+        /// <summary>
+        /// VS Code theme colour id when the node's file has errors / warnings,
+        /// so the tree flags broken files the way the editor's NavigatePanel
+        /// does with its exclamation badge.
+        /// </summary>
+        public string? IconColor { get; set; }
 
         public List<HierarchyNodeDescriptor> Children { get; } = new();
     }

@@ -880,6 +880,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             Detail = DescribeItem(item),
             Uri = ResolveItemUri(item),
             HasChildren = CanExpand(item),
+            Icon = ResolveItemIcon(item),
+            IconColor = ResolveItemIconColor(item),
         };
 
         // position of the instantiating statement (click-to-jump)
@@ -1016,6 +1018,52 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             pluginVerilog.Data.VerilogHeaderInstance header => header.RelativePath,
             _ => item.RelativePath,
         };
+    }
+
+    /// <summary>
+    /// VS Code codicon id for a NavigatePanel item, decided from what the item
+    /// represents: a module instance, an interface instance, an imported
+    /// package or an include header. The editor draws these with its own SVG
+    /// assets, but those are filled with a fixed dark grey and would be
+    /// invisible on a dark VS Code theme, so the tree uses theme-following
+    /// codicons instead.
+    /// </summary>
+    private static string? ResolveItemIcon(CodeEditor2.Data.Item item)
+    {
+        switch (item)
+        {
+            case pluginVerilog.Data.VerilogModuleInstance module:
+                // the instantiated building block decides the icon, so an
+                // interface instantiated through the module path still shows
+                // the interface icon
+                return module.GetParentInstanciatiation()?.GetInstancedBuildingBlock()
+                    is pluginVerilog.Verilog.BuildingBlocks.Interface
+                    ? "symbol-interface"
+                    : "symbol-module";
+            case pluginVerilog.Data.InterfaceInstance:
+                return "symbol-interface";
+            case pluginVerilog.Data.ImportedPackage:
+                return "symbol-package";
+            case pluginVerilog.Data.VerilogHeaderInstance:
+                return "file-code";
+            default:
+                return "symbol-module";
+        }
+    }
+
+    /// <summary>
+    /// VS Code theme colour id used to flag a node whose file has errors or
+    /// warnings, mirroring the editor's exclamation badge on NavigatePanel
+    /// nodes. Null when the file is clean (or not parsed yet).
+    /// </summary>
+    private static string? ResolveItemIconColor(CodeEditor2.Data.Item item)
+    {
+        if (item is not pluginVerilog.Data.IVerilogRelatedFile file) return null;
+        pluginVerilog.Verilog.ParsedDocument? parsed = file.VerilogParsedDocument;
+        if (parsed == null) return null;
+        if (parsed.ErrorCount > 0) return "errorForeground";
+        if (parsed.WarningCount > 0) return "editorWarning.foreground";
+        return null;
     }
 
     /// <summary>

@@ -1590,6 +1590,27 @@ public sealed partial class LspHandler
                 ? known.HasHierarchyChildren()
                 : ext is ".sv" or ".svh" or ".v" or ".vh";
 
+            // Flag files with errors / warnings the way the editor's
+            // NavigatePanel does with its exclamation badge. Only already
+            // parsed files are inspected: parsing every file in the listing
+            // would defeat the lazy expansion.
+            string? iconColor = null;
+            if (project.FindFile(uri) is InMemoryFile parsedFile)
+            {
+                foreach (ISystemVerilogDiagnostic diagnostic in parsedFile.Diagnostics)
+                {
+                    if (diagnostic.Severity == SystemVerilogSeverity.Error)
+                    {
+                        iconColor = "errorForeground";
+                        break;
+                    }
+                    if (diagnostic.Severity == SystemVerilogSeverity.Warning)
+                    {
+                        iconColor = "editorWarning.foreground";
+                    }
+                }
+            }
+
             nodes.Add(new HierarchyNode
             {
                 Label = name,
@@ -1598,6 +1619,7 @@ public sealed partial class LspHandler
                 Detail = GetRelativePath(project, path) ?? name,
                 HasChildren = hasChildren,
                 Icon = "file",
+                IconColor = iconColor,
                 ContextValue = "rtlFile",
                 Collapsible = hasChildren ? "collapsed" : "none",
                 Tooltip = uri,
@@ -1685,8 +1707,12 @@ public sealed partial class LspHandler
                 StartCharacter = child.StartCharacter,
                 HasChildren = child.HasChildren,
                 // presentation metadata: the client only maps it onto the
-                // VS Code TreeItem (no derivation on the client side)
-                Icon = "symbol-class",
+                // VS Code TreeItem (no derivation on the client side). The
+                // icon comes from the descriptor (module / interface / package
+                // / include header) so the tree distinguishes them, and the
+                // colour flags files with errors / warnings.
+                Icon = child.Icon ?? "symbol-module",
+                IconColor = child.IconColor,
                 ContextValue = "rtlInstance",
                 Collapsible = child.HasChildren ? "collapsed" : "none",
                 Tooltip = string.IsNullOrEmpty(child.Detail)

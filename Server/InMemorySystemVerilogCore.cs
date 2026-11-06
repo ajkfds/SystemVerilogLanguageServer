@@ -1114,6 +1114,27 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
+    /// rtl/snippet support: the text the editor's snippet would insert at the
+    /// given index (module instantiation, alwaysFF, modport, port inversion,
+    /// port connection fill). The decision of <b>what</b> to insert lives in
+    /// the plugin's UI-free <c>CoreBridge.SnippetAdapter</c>; the host only
+    /// applies the returned text.
+    /// </summary>
+    internal pluginVerilog.CoreBridge.SnippetAdapter.SnippetResult? GetSnippets(
+        int index,
+        string name,
+        string? argument,
+        int selectionStart,
+        int selectionEnd)
+    {
+        EnsureBuilt();
+        if (_parsedDocument == null) return null;
+        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        return pluginVerilog.CoreBridge.SnippetAdapter.GetSnippets(
+            verilogFile, _parsedDocument, index, name, argument, selectionStart, selectionEnd);
+    }
+
+    /// <summary>
     /// Runs the real Verilog parser through the plugin's UI-free
     /// CoreBridge.ParseEngine and materialises declarations and references
     /// as InMemoryElements so definition / references / outline queries

@@ -95,6 +95,7 @@ public sealed partial class LspHandler
         _requestHandlers["rtl/hierarchy"] = HandleHierarchy;
         _requestHandlers["rtl/reparse"] = HandleReparse;
         _requestHandlers["rtl/theme"] = HandleTheme;
+        _requestHandlers["rtl/snippet"] = HandleSnippet;
 
         _notificationHandlers["initialized"] = HandleInitialized;
         _notificationHandlers["exit"] = HandleExit;

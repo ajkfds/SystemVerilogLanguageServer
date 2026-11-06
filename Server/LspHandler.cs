@@ -1255,6 +1255,8 @@ public sealed partial class LspHandler
                 Label = e.Text,
                 Kind = e.Kind,
                 Detail = e.Detail,
+                InsertText = e.InsertText,
+                InsertTextFormat = e.InsertText == null ? null : e.InsertTextFormat,
             });
         }
         return new CompletionList { IsIncomplete = false, Items = items };
@@ -1944,6 +1946,10 @@ public sealed class CompletionItem
     /// <summary>LSP CompletionItemKind (3=Function, 6=Variable, 9=Module, 14=Keyword).</summary>
     [JsonPropertyName("kind")] public int Kind { get; set; }
     [JsonPropertyName("detail")] public string? Detail { get; set; }
+    /// <summary>Text inserted on accept. Omitted when it equals the label.</summary>
+    [JsonPropertyName("insertText")] public string? InsertText { get; set; }
+    /// <summary>LSP InsertTextFormat (1=PlainText, 2=Snippet).</summary>
+    [JsonPropertyName("insertTextFormat")] public int? InsertTextFormat { get; set; }
 }
 
 public sealed class TextDocumentSyncOptions

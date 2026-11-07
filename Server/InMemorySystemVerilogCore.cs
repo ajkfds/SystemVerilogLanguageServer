@@ -1243,6 +1243,38 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
+    /// rtl/autoConnect support: the auto-connect form for the module
+    /// instantiation at <paramref name="index"/> (one row per port with the
+    /// signal the editor would connect). The decision of <b>which signal
+    /// matches a port</b> lives in the plugin's UI-free
+    /// <c>CoreBridge.AutoConnectAdapter</c>; the host only renders the rows.
+    /// </summary>
+    internal SystemVerilogCore.AutoConnect.AutoConnectModel? GetAutoConnectModel(int index)
+    {
+        EnsureBuilt();
+        if (_parsedDocument == null) return null;
+        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        return pluginVerilog.CoreBridge.AutoConnectAdapter.Build(verilogFile, _parsedDocument, index);
+    }
+
+    /// <summary>
+    /// rtl/autoConnectApply support: rebuilds the instantiation text with the
+    /// chosen connections. Returns null when the instantiation cannot be
+    /// rebuilt (the caller then reports "nothing to apply").
+    /// </summary>
+    internal string? ApplyAutoConnect(
+        int index,
+        IReadOnlyDictionary<string, string?> selections,
+        string indent)
+    {
+        EnsureBuilt();
+        if (_parsedDocument == null) return null;
+        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        return pluginVerilog.CoreBridge.AutoConnectAdapter.Apply(
+            verilogFile, _parsedDocument, index, selections, indent);
+    }
+
+    /// <summary>
     /// Runs the real Verilog parser through the plugin's UI-free
     /// CoreBridge.ParseEngine and materialises declarations and references
     /// as InMemoryElements so definition / references / outline queries
@@ -1345,6 +1377,20 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     private pluginVerilog.Verilog.ParsedDocument? _parsedDocument;
+
+    /// <summary>
+    /// The real parser's result for this file (null until it has been parsed).
+    /// Exposed so the LSP handlers can walk the parse tree (e.g. the
+    /// auto-connect form needs the instantiation's source range).
+    /// </summary>
+    internal pluginVerilog.Verilog.ParsedDocument? ParsedDocument
+    {
+        get
+        {
+            EnsureBuilt();
+            return _parsedDocument;
+        }
+    }
 
     /// <summary>
     /// Drives the plugin ParseEngine on an in-memory VerilogFile.

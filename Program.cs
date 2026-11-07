@@ -1,5 +1,7 @@
 using System;
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,17 +21,24 @@ internal static class Program
             return;
         }
 
+        // Debugging transport: `--port <n>` makes the server listen on the
+        // loopback interface instead of using stdin/stdout. The extension then
+        // connects to that port (see SVLSP_SERVER_PORT in extension.js), which
+        // lets the C# debugger launch this process directly while the
+        // extension host runs in parallel (F5 in RtlEditor2.code-workspace).
+        int port = ParsePortArgument(args);
+        if (port > 0)
+        {
+            await RunTcpServerAsync(port);
+            return;
+        }
+
         // The LSP server speaks JSON-RPC over stdin/stdout. We avoid the
         // Console helper on purpose: the LSP client expects raw bytes, not
         // the .NET console encoding-aware wrappers, and writing to Console
         // can interleave with logging.
         Stream input = Console.OpenStandardInput();
         Stream output = Console.OpenStandardOutput();
-
-        InMemorySystemVerilogCore core = new();
-        LspHandler handler = new(core);
-        LspStreamReader reader = new(input);
-        LspStreamWriter writer = new(output);
 
         using CancellationTokenSource cts = new();
         Console.CancelKeyPress += (_, e) =>
@@ -38,16 +47,98 @@ internal static class Program
             cts.Cancel();
         };
 
-        // Server-initiated notifications (publishDiagnostics) are pushed
-        // synchronously while handling client messages, so the writer is
-        // only ever used from this single loop: no interleaving.
-        handler.NotificationSender = (msg) => writer.WriteMessageAsync(msg, cts.Token).GetAwaiter().GetResult();
+        await RunLoopAsync(input, output, cts.Token);
+    }
+
+    /// <summary>
+    /// Reads <c>--port &lt;n&gt;</c> / <c>--port=&lt;n&gt;</c> from the command line.
+    /// Returns 0 when the server should speak LSP over stdin/stdout (the
+    /// default, used by the packaged extension).
+    /// </summary>
+    private static int ParsePortArgument(string[] args)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            string arg = args[i];
+            if (arg == "--port" && i + 1 < args.Length &&
+                int.TryParse(args[i + 1], out int separated) && separated > 0)
+            {
+                return separated;
+            }
+            if (arg.StartsWith("--port=", StringComparison.Ordinal) &&
+                int.TryParse(arg.Substring("--port=".Length), out int inline) && inline > 0)
+            {
+                return inline;
+            }
+        }
+        return 0;
+    }
+
+    /// <summary>
+    /// Listens on the loopback interface and serves a single LSP session over
+    /// TCP. Used for debugging: the extension connects to the port instead of
+    /// spawning the server, so the C# debugger can launch this process
+    /// directly (F5 in RtlEditor2.code-workspace starts both the extension
+    /// host and this server).
+    /// </summary>
+    private static async Task RunTcpServerAsync(int port)
+    {
+        TcpListener listener = new(IPAddress.Loopback, port);
+        listener.Start();
+        Console.Error.WriteLine($"listening for an LSP client on 127.0.0.1:{port}");
+
+        using CancellationTokenSource cts = new();
+        Console.CancelKeyPress += (_, e) =>
+        {
+            e.Cancel = true;
+            cts.Cancel();
+        };
 
         try
         {
+            // Accept repeatedly: "Developer: Reload Window" restarts the
+            // extension host, which reconnects to this same server. Each
+            // connection gets a fresh LSP session (the client re-initializes).
             while (!cts.IsCancellationRequested)
             {
-                string? json = await reader.ReadMessageAsync(cts.Token);
+                using TcpClient tcp = await listener.AcceptTcpClientAsync(cts.Token);
+                tcp.NoDelay = true;
+                Console.Error.WriteLine("LSP client connected");
+                using NetworkStream stream = tcp.GetStream();
+                await RunLoopAsync(stream, stream, cts.Token);
+                Console.Error.WriteLine("LSP client disconnected");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // graceful shutdown
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    /// <summary>
+    /// The LSP message loop. Shared by the stdio and TCP transports.
+    /// </summary>
+    private static async Task RunLoopAsync(Stream input, Stream output, CancellationToken cancellationToken)
+    {
+        InMemorySystemVerilogCore core = new();
+        LspHandler handler = new(core);
+        LspStreamReader reader = new(input);
+        LspStreamWriter writer = new(output);
+
+        // Server-initiated notifications (publishDiagnostics) are pushed
+        // synchronously while handling client messages, so the writer is
+        // only ever used from this single loop: no interleaving.
+        handler.NotificationSender = (msg) => writer.WriteMessageAsync(msg, cancellationToken).GetAwaiter().GetResult();
+
+        try
+        {
+            while (!cancellationToken.IsCancellationRequested)
+            {
+                string? json = await reader.ReadMessageAsync(cancellationToken);
                 if (json == null)
                 {
                     break;
@@ -60,7 +151,7 @@ internal static class Program
                 }
                 catch (JsonException ex)
                 {
-                    await WriteErrorAsync(writer, null, -32700, $"Parse error: {ex.Message}", cts.Token);
+                    await WriteErrorAsync(writer, null, -32700, $"Parse error: {ex.Message}", cancellationToken);
                     continue;
                 }
                 if (message == null || message.Method == null) continue;
@@ -74,18 +165,18 @@ internal static class Program
 
                     if (isRequest)
                     {
-                        object? result = handler.TryHandleRequest(message.Method, parameters, cts.Token, out var r)
+                        object? result = handler.TryHandleRequest(message.Method, parameters, cancellationToken, out var r)
                             ? r
                             : throw new InvalidOperationException($"Method not found: {message.Method}");
                         await writer.WriteMessageAsync(new LspMessage
                         {
                             Id = message.Id,
                             Result = result,
-                        }, cts.Token);
+                        }, cancellationToken);
                     }
                     else
                     {
-                        if (!handler.TryHandleNotification(message.Method, parameters, cts.Token))
+                        if (!handler.TryHandleNotification(message.Method, parameters, cancellationToken))
                         {
                             // Unknown notification: ignore (LSP clients treat
                             // this as a no-op).
@@ -104,7 +195,7 @@ internal static class Program
                     Console.Error.WriteLine($"error handling {message.Method}: {ex}");
                     if (isRequest)
                     {
-                        await WriteErrorAsync(writer, message.Id, -32603, $"Internal error: {ex.Message}", cts.Token);
+                        await WriteErrorAsync(writer, message.Id, -32603, $"Internal error: {ex.Message}", cancellationToken);
                     }
                 }
             }

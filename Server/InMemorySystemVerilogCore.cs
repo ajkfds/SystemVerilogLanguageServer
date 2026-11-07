@@ -1423,7 +1423,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             if (nameStart >= 0)
             {
                 var declElement = new InMemoryElement(bb.Name, MapNamedElementType(bb),
-                    new SystemVerilogRange(nameStart, nameStart + bb.Name.Length), this, parent);
+                    new SystemVerilogRange(nameStart, bb.Name.Length), this, parent);
                 block.SelfElement = declElement;
                 RegisterElement(declElement);
             }
@@ -1443,7 +1443,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
                 int start = FindNameStart(text, element.Name);
                 if (start < 0) continue;
                 var memberElement = new InMemoryElement(element.Name, MapNamedElementType(element),
-                    new SystemVerilogRange(start, start + element.Name.Length), this, block);
+                    new SystemVerilogRange(start, element.Name.Length), this, block);
                 RegisterElement(memberElement);
                 block.AddMember(memberElement);
             }
@@ -1527,8 +1527,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile
 
     private void RegisterReference(string name, int index, int length, bool isDeclaration)
     {
+        // The plugin's WordReference.Length is the distance to the *next* token
+        // (an editor mark convention that also covers the whitespace and
+        // comments in between), not the token width. Using it directly made
+        // every LSP range (documentHighlight / references / rename) span from
+        // the identifier to the following token, so clicking a symbol
+        // highlighted far more than the word. Re-derive the width with the
+        // plugin's own tokenizer, which is what the editor's
+        // CodeDocument.GetWord returns for the same position.
+        int tokenLength = GetTokenLength(index, length);
         var element = new InMemoryElement(name, SystemVerilogNamedElementKind.Unknown,
-            new SystemVerilogRange(index, index + length), this, null, isReference: !isDeclaration);
+            new SystemVerilogRange(index, tokenLength), this, null, isReference: !isDeclaration);
         _allElements.Add(element);
         if (!_byName.TryGetValue(name, out var list))
         {
@@ -1536,6 +1545,30 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             _byName[name] = list;
         }
         list.Add(element);
+    }
+
+    /// <summary>
+    /// Length of the token that starts at <paramref name="index"/>, using the
+    /// plugin's own tokenizer so the range matches what the editor's
+    /// <c>CodeDocument.GetWord</c> returns for the same position (identifiers,
+    /// sized literals like <c>1'b0</c>, multi-character operators, ...).
+    /// <paramref name="fallbackLength"/> is only used when the tokenizer cannot
+    /// run (no parse result yet).
+    /// </summary>
+    private int GetTokenLength(int index, int fallbackLength)
+    {
+        CodeEditor2.CodeEditor.CodeDocument? doc = _parsedDocument?.CodeDocument;
+        if (doc != null && index >= 0 && index < doc.Length)
+        {
+            int tokenIndex = index;
+            string sectionName = "";
+            pluginVerilog.Verilog.WordPointer.FetchNext(
+                doc, ref tokenIndex, out int length, out _, out _, ref sectionName);
+            // FetchNext skips leading blanks; the caller always passes a token
+            // start, so tokenIndex stays put and length is the token width.
+            if (length > 0 && tokenIndex == index) return length;
+        }
+        return fallbackLength > 0 ? fallbackLength : 1;
     }
 
     private void RegisterElement(InMemoryElement element)
@@ -1630,8 +1663,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         {
             InMemoryBlock? owner = (sym.Owner != null && blockByScope.TryGetValue(sym.Owner, out var b))
                 ? b : null;
+            // SymbolInfo.End is an exclusive end index; SystemVerilogRange
+            // takes a length.
             var element = new InMemoryElement(sym.Name, KindToNamedElementKind(sym.Kind),
-                new SystemVerilogRange(sym.Start, sym.End), this, owner);
+                new SystemVerilogRange(sym.Start, sym.End - sym.Start), this, owner);
             _allElements.Add(element);
             if (!_byName.TryGetValue(sym.Name, out var list))
             {
@@ -1678,8 +1713,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile
 
         foreach (ReferenceInfo rf in parsed.References)
         {
+            // ReferenceInfo.End is an exclusive end index; SystemVerilogRange
+            // takes a length.
             var element = new InMemoryElement(rf.Name, SystemVerilogNamedElementKind.Unknown,
-                new SystemVerilogRange(rf.Start, rf.End), this, null, isReference: true);
+                new SystemVerilogRange(rf.Start, rf.End - rf.Start), this, null, isReference: true);
             _allElements.Add(element);
             if (!_byName.TryGetValue(rf.Name, out var list))
             {

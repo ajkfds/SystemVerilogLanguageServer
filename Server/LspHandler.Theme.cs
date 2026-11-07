@@ -44,7 +44,13 @@ public sealed partial class LspHandler
         ("property", pluginVerilog.CodeDrawStyle.ColorType.Net),
         ("parameter", pluginVerilog.CodeDrawStyle.ColorType.Parameter),
         ("register", pluginVerilog.CodeDrawStyle.ColorType.Register),
-        ("identifier", pluginVerilog.CodeDrawStyle.ColorType.Identifier),
+        // "identifier" is the token type used for plain references (a signal
+        // read in an expression, an instance name, ...). The editor draws
+        // those with ColorType.Normal (the default foreground), NOT with
+        // ColorType.Identifier: that teal is reserved for declarations
+        // (module / class / function names). Mapping it to Identifier made
+        // every reference teal, which reads as "the colours are wrong".
+        ("identifier", pluginVerilog.CodeDrawStyle.ColorType.Normal),
     };
 
     /// <summary>

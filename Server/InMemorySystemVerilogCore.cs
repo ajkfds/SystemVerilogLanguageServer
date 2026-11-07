@@ -886,6 +886,23 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
+    /// The plugin item for another file of the project, addressed by its
+    /// document URI. Used to walk the instance tree of the file an
+    /// instantiation is written in (which is not this file when the node being
+    /// opened is the instantiated module).
+    /// </summary>
+    private pluginVerilog.Data.VerilogFile? GetPluginFileForUri(string? uri)
+    {
+        if (string.IsNullOrEmpty(uri)) return null;
+        InMemoryProject? project = ProjectOwner;
+        if (project == null) return null;
+        if (project.FindFile(uri) is not InMemoryFile file) return null;
+        string? relativePath = project.GetProjectRelativePath(file.AbsolutePath);
+        if (string.IsNullOrEmpty(relativePath)) return null;
+        return project.GetPluginItem(relativePath) as pluginVerilog.Data.VerilogFile;
+    }
+
+    /// <summary>
     /// Converts one NavigatePanel <see cref="CodeEditor2.Data.Item"/> (a
     /// module / interface instance, an imported package, an include header
     /// instance, ...) into a hierarchy node descriptor. Children are resolved
@@ -912,6 +929,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             // file its instantiation is written in, so the expand token keeps
             // addressing that document.
             ExpandUri = documentUri ?? ResolveItemUri(item),
+            // The client echoes this back in rtl/reparse so the server can walk
+            // the parent's instance tree and parse the document AS this
+            // instance (parameter overrides applied).
+            ParentUri = documentUri,
             HasChildren = CanExpand(item),
             Icon = ResolveItemIcon(item),
             IconColor = ResolveItemIconColor(item),
@@ -1433,6 +1454,109 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         // create / reuse a plugin-side VerilogFile for this in-memory file
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
         return pluginVerilog.CoreBridge.ParseEngine.ParseSystemVerilogAsync(text, verilogFile);
+    }
+
+    /// <summary>
+    /// Re-parses this file AS the instance addressed by
+    /// <paramref name="instancePath"/> (a chain of child names from the file
+    /// root), so the parameter overrides written at the instantiation are
+    /// applied to the parse result.
+    ///
+    /// <para>
+    /// The editor opens the INSTANCE, not the file: selecting a module instance
+    /// calls <c>SetTextFileAsync(instance)</c>, and the instance's parser is
+    /// created with the instantiation's parameter overrides
+    /// (<c>VerilogModuleInstance.CreateDocumentParser</c>). A plain file parse
+    /// uses the declared defaults, so a module instantiated with
+    /// <c>#(.P_WIDTH(5))</c> would still be shown with <c>P_WIDTH = 8</c> and
+    /// every width derived from it would be wrong. This method reproduces the
+    /// editor's behaviour for the LSP host.
+    /// </para>
+    ///
+    /// <para>
+    /// Returns false when the path does not resolve to an instance (a plain
+    /// file, a stale token, or an instance whose source could not be resolved);
+    /// the caller then keeps the plain file parse.
+    /// </para>
+    /// </summary>
+    internal bool RebuildAsInstance(string? parentUri, IReadOnlyList<string> instancePath)
+    {
+        if (instancePath.Count == 0) return false;
+        if (_manualSymbols) return false;
+
+        // The instance path is relative to the file the instantiation is
+        // WRITTEN IN (the parent), not to this file: clicking "u_child" under
+        // top.sv opens child.sv, but the instance lives in top.sv. Walk the
+        // parent's item tree to find it, then parse THIS file with the
+        // instance's parameter overrides.
+        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginFileForUri(parentUri) ?? GetPluginVerilogFile();
+        if (pluginFile == null) return false;
+
+        // Walk the instance path with the editor's Updater so each level's
+        // Items collection is populated (same as GetHierarchyChildren).
+        CodeEditor2.Data.Item current = pluginFile;
+        foreach (string segment in instancePath)
+        {
+            CodeEditor2.Data.Item? next = null;
+            foreach (CodeEditor2.Data.Item candidate in GetUpdatedChildren(current))
+            {
+                if (string.Equals(candidate.Name, segment, StringComparison.Ordinal))
+                {
+                    next = candidate;
+                    break;
+                }
+            }
+            if (next == null) return false;
+            current = next;
+        }
+
+        // The target must be an instance (module / interface): only those carry
+        // parameter overrides and a target building-block name.
+        string? moduleName;
+        Dictionary<string, pluginVerilog.Verilog.Expressions.Expression> overrides;
+        switch (current)
+        {
+            case pluginVerilog.Data.VerilogModuleInstance module:
+                moduleName = module.InstanceName;
+                overrides = module.ParameterOverrides;
+                break;
+            case pluginVerilog.Data.InterfaceInstance iface:
+                moduleName = iface.InstanceName;
+                overrides = iface.ParameterOverrides;
+                break;
+            default:
+                return false;
+        }
+        if (string.IsNullOrEmpty(moduleName)) return false;
+
+        pluginVerilog.Verilog.ParsedDocument? parsed;
+        try
+        {
+            parsed = pluginVerilog.CoreBridge.ParseEngine.ParseInstanceAsync(
+                CodeDocumentText, pluginFile, moduleName, overrides).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"rtl/reparse: instance parse failed for {moduleName}: {ex.Message}");
+            return false;
+        }
+        if (parsed?.Root == null) return false;
+
+        lock (_buildLock)
+        {
+            _allElements.Clear();
+            _byName.Clear();
+            _buildingBlocks.Clear();
+            _members.Clear();
+            lock (_diagnosticsLock) { _diagnostics.Clear(); }
+            _parsedDocument = parsed;
+            _document = null;
+            _built = true;
+            _cachedTokens = null;
+        }
+        BuildSymbolsFromParsedDocument(parsed, CodeDocumentText);
+        SetDiagnostics(CollectDiagnostics(parsed));
+        return true;
     }
 
     private pluginVerilog.Data.VerilogFile? _verilogFile;

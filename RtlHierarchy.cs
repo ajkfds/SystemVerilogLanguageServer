@@ -109,6 +109,31 @@ namespace SystemVerilogLanguageServer
         public string? InstancePath { get; set; }
 
         /// <summary>
+        /// Instance path as name segments from the file root ("u_mid", "u_leaf").
+        ///
+        /// <para>
+        /// The client echoes this back in <c>rtl/reparse</c> when the node is
+        /// clicked, so the server can parse the document AS that instance (with
+        /// its parameter overrides) instead of as the plain source file. The
+        /// editor opens the instance, not the file, which is why the override
+        /// values show up in its diagnostics / colouring.
+        /// </para>
+        /// </summary>
+        [JsonPropertyName("instancePathSegments")]
+        public List<string>? InstancePathSegments { get; set; }
+
+        /// <summary>
+        /// URI of the file the instantiation is WRITTEN IN (the parent). The
+        /// client echoes it back in <c>rtl/reparse</c> together with
+        /// <see cref="InstancePathSegments"/> so the server can walk the
+        /// parent's instance tree and find the instance (the node's own
+        /// <see cref="Uri"/> is the instantiated module's source, a different
+        /// file). Null for folder / file nodes.
+        /// </summary>
+        [JsonPropertyName("parentUri")]
+        public string? ParentUri { get; set; }
+
+        /// <summary>
         /// Absolute path of the file the node represents (file / instance
         /// nodes). Used by the file operations (Add / Delete / Open in
         /// Explorer) so the client does not have to compute it.
@@ -188,6 +213,13 @@ namespace SystemVerilogLanguageServer
         /// sibling is added or removed, unlike the old index sequence.
         /// </summary>
         public List<string> InstancePathSegments { get; } = new();
+
+        /// <summary>
+        /// URI of the file the instantiation is written in (the parent), used
+        /// by the client to ask for an instance parse on click. Null for
+        /// non-instance nodes.
+        /// </summary>
+        public string? ParentUri { get; set; }
 
         /// <summary>Absolute path of the file the node represents.</summary>
         public string? FsPath { get; set; }

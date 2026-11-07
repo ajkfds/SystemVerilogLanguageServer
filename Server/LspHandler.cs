@@ -659,9 +659,44 @@ public sealed partial class LspHandler
         InMemoryFile? file = TryLoadFileFromDisk(project, uri);
         if (file == null) return new { parsed = false };
 
-        file.Rebuild();
+        // An instance node click parses the document AS that instance so the
+        // parameter overrides written at the instantiation are applied (the
+        // editor opens the instance, not the file, which is why its diagnostics
+        // reflect the override). Falls back to the plain file parse when the
+        // path does not resolve to an instance (a file node click).
+        List<string>? instancePath = null;
+        if (parameters.TryGetProperty("instancePathSegments", out var segmentsElement)
+            && segmentsElement.ValueKind == JsonValueKind.Array)
+        {
+            instancePath = new List<string>();
+            foreach (JsonElement segment in segmentsElement.EnumerateArray())
+            {
+                if (segment.ValueKind == JsonValueKind.String)
+                {
+                    instancePath.Add(segment.GetString() ?? string.Empty);
+                }
+            }
+        }
+
+        // The instance path is relative to the file the instantiation is
+        // written in (the parent), which is not the file being opened when the
+        // node is the instantiated module. The client sends it as parentUri.
+        string? parentUri = null;
+        if (parameters.TryGetProperty("parentUri", out var parentElement)
+            && parentElement.ValueKind == JsonValueKind.String)
+        {
+            parentUri = NormalizeUri(parentElement.GetString() ?? string.Empty);
+        }
+
+        bool parsedAsInstance = instancePath != null
+            && instancePath.Count > 0
+            && file.RebuildAsInstance(parentUri, instancePath);
+        if (!parsedAsInstance)
+        {
+            file.Rebuild();
+        }
         PushDiagnostics(project, uri);
-        return new { parsed = true };
+        return new { parsed = true, instance = parsedAsInstance };
     }
 
     private object? HandleShutdown(JsonElement parameters, CancellationToken cancellationToken) => null;
@@ -1735,6 +1770,14 @@ public sealed partial class LspHandler
                     ? child.InstancePath
                     : $"{child.InstancePath}  ({child.Detail})",
                 InstancePath = child.InstancePath,
+                // the client echoes this back in rtl/reparse so the server can
+                // parse the document AS this instance (parameter overrides
+                // applied), matching what the editor shows when the node is
+                // selected
+                InstancePathSegments = child.InstancePathSegments.Count > 0
+                    ? new List<string>(child.InstancePathSegments)
+                    : null,
+                ParentUri = child.ParentUri,
                 FsPath = child.FsPath,
                 DirPath = child.DirPath,
                 // opaque token for the next expansion (null for leaves). The

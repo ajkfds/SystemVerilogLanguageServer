@@ -1613,6 +1613,18 @@ public sealed partial class LspHandler
                 };
             }
 
+            // The icon name mirrors the editor's NavigatePanel: a SystemVerilog
+            // document, a Verilog document or a header, chosen by extension.
+            // The client maps it onto the plugin's own SVG assets.
+            string iconName = ext switch
+            {
+                ".sv" => "systemverilog-document",
+                ".svh" => "verilog-header-document",
+                ".v" => "verilog-document",
+                ".vh" => "verilog-header-document",
+                _ => "file",
+            };
+
             nodes.Add(new HierarchyNode
             {
                 Label = name,
@@ -1620,7 +1632,7 @@ public sealed partial class LspHandler
                 Kind = HierarchyNodeKind.File,
                 Detail = GetRelativePath(project, path) ?? name,
                 HasChildren = hasChildren,
-                Icon = "file",
+                Icon = iconName,
                 IconColor = iconColor,
                 ContextValue = "rtlFile",
                 Collapsible = hasChildren ? "collapsed" : "none",
@@ -1713,7 +1725,7 @@ public sealed partial class LspHandler
                 // icon comes from the descriptor (module / interface / package
                 // / include header) so the tree distinguishes them, and the
                 // colour flags files with errors / warnings.
-                Icon = child.Icon ?? "symbol-module",
+                Icon = child.Icon ?? "module",
                 IconColor = child.IconColor,
                 ContextValue = "rtlInstance",
                 Collapsible = child.HasChildren ? "collapsed" : "none",

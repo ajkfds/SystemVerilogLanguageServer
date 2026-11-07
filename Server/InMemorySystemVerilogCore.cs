@@ -1031,12 +1031,16 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
-    /// VS Code codicon id for a NavigatePanel item, decided from what the item
+    /// Icon name for a NavigatePanel item, decided from what the item
     /// represents: a module instance, an interface instance, an imported
-    /// package or an include header. The editor draws these with its own SVG
-    /// assets, but those are filled with a fixed dark grey and would be
-    /// invisible on a dark VS Code theme, so the tree uses theme-following
-    /// codicons instead.
+    /// package or an include header.
+    ///
+    /// <para>
+    /// The name is a stable token, not a VS Code codicon id: the client maps it
+    /// onto the plugin's own SVG assets (shipped in the extension's icons/
+    /// folder, light + dark variants) so the tree matches the desktop editor's
+    /// NavigatePanel. Unknown names fall back to a codicon on the client.
+    /// </para>
     /// </summary>
     private static string? ResolveItemIcon(CodeEditor2.Data.Item item)
     {
@@ -1052,21 +1056,21 @@ internal sealed class InMemoryFile : ISystemVerilogFile
                 {
                     return module.GetParentInstanciatiation()?.GetInstancedBuildingBlock()
                         is pluginVerilog.Verilog.BuildingBlocks.Interface
-                        ? "symbol-interface"
-                        : "symbol-module";
+                        ? "interface"
+                        : "module";
                 }
                 catch (Exception)
                 {
-                    return "symbol-module";
+                    return "module";
                 }
             case pluginVerilog.Data.InterfaceInstance:
-                return "symbol-interface";
+                return "interface";
             case pluginVerilog.Data.ImportedPackage:
-                return "symbol-package";
+                return "package";
             case pluginVerilog.Data.VerilogHeaderInstance:
-                return "file-code";
+                return "header";
             default:
-                return "symbol-module";
+                return "module";
         }
     }
 

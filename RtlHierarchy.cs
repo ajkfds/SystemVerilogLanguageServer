@@ -58,14 +58,15 @@ namespace SystemVerilogLanguageServer
         // ---- only maps it onto the VS Code TreeItem) ----
 
         /// <summary>
-        /// VS Code ThemeIcon (codicon) id: "folder" / "file" / "file-code" /
-        /// "symbol-class" / "symbol-interface" / "symbol-package" / "warning".
-        /// The client passes it straight to <c>new ThemeIcon(id, color)</c>.
+        /// Stable icon name: "folder" / "file" / "module" / "interface" /
+        /// "package" / "header" / "systemverilog-document" /
+        /// "verilog-document" / "verilog-header-document".
         ///
         /// <para>
-        /// Codicons are used instead of the plugin's own SVG assets because
-        /// those are filled with a fixed dark grey (#4b4b4b) and would be
-        /// invisible on a dark VS Code theme; codicons follow the theme.
+        /// The client maps the name onto the plugin's own SVG assets (shipped
+        /// in the extension's icons/ folder, light + dark variants) so the tree
+        /// matches the desktop editor's NavigatePanel. Names the client does
+        /// not ship an SVG for fall back to a VS Code codicon.
         /// </para>
         /// </summary>
         [JsonPropertyName("icon")]
@@ -177,8 +178,9 @@ namespace SystemVerilogLanguageServer
         public string? DirPath { get; set; }
 
         /// <summary>
-        /// VS Code codicon id for the node, decided from the instantiated
+        /// Stable icon name for the node, decided from the instantiated
         /// building block kind (module / interface / package / include header).
+        /// The client maps it onto the plugin's SVG assets.
         /// </summary>
         public string? Icon { get; set; }
 

@@ -1737,9 +1737,13 @@ public sealed partial class LspHandler
                 InstancePath = child.InstancePath,
                 FsPath = child.FsPath,
                 DirPath = child.DirPath,
-                // opaque token for the next expansion (null for leaves)
-                ExpandToken = child.HasChildren && !string.IsNullOrEmpty(child.Uri)
-                    ? ExpandToken.ForInstance(child.Uri!, child.InstancePathSegments)
+                // opaque token for the next expansion (null for leaves). The
+                // token addresses the instance inside the file its
+                // instantiation is WRITTEN IN (ExpandUri), which is not the
+                // file the node opens on click (Uri = the instantiated
+                // module's own source).
+                ExpandToken = child.HasChildren && !string.IsNullOrEmpty(child.ExpandUri)
+                    ? ExpandToken.ForInstance(child.ExpandUri!, child.InstancePathSegments)
                     : null,
             });
         }

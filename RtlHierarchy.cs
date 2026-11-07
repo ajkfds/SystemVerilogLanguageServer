@@ -150,7 +150,25 @@ namespace SystemVerilogLanguageServer
     {
         public string Label { get; set; } = "";
         public string? Detail { get; set; }
+
+        /// <summary>
+        /// File the node OPENS when clicked: the item's own file. For an
+        /// instance that is the instantiated module's source (the editor's
+        /// NavigatePanel opens the instance's source file too, not the file the
+        /// instantiation is written in); for an imported package / include
+        /// header it is the package / header file.
+        /// </summary>
         public string? Uri { get; set; }
+
+        /// <summary>
+        /// File the instantiation is WRITTEN IN, used to build the expand token
+        /// (the token addresses the instance inside that file). This is not the
+        /// click target: clicking opens <see cref="Uri"/> (the instantiated
+        /// module's own source), while expanding has to look the instance up in
+        /// the parent file. Null for nodes that are not instances.
+        /// </summary>
+        public string? ExpandUri { get; set; }
+
         public int? StartLine { get; set; }
         public int? StartCharacter { get; set; }
 

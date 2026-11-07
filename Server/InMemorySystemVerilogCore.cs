@@ -752,29 +752,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile
 
         // The children's instantiations are written in the document that was
         // parsed to produce them: the file itself for the first level, or the
-        // instantiated module's source file for a deeper level. Their
-        // startLine / startCharacter are offsets into THAT document, and
-        // clicking the node has to open it - not the file the instance points
-        // at (the instantiated module's own source).
-        //
-        // Getting this wrong broke expansion: the expand token names the file
-        // the instance LIVES IN, so a token built from the instantiated
-        // module's own source made the next request look for the instance
-        // inside the wrong file and come back empty (the arrow was drawn but
-        // the level never filled in).
-        // The document that contains the children's instantiations: the file
-        // itself for the first level, or the instantiated module's source file
-        // for a deeper level (an instance shares its source file's document).
-        // Their startLine / startCharacter are offsets into THAT document, and
-        // the expand token has to name it too - the token addresses the
-        // instance inside the file it is written in, not the file it points at.
-        CodeEditor2.CodeEditor.CodeDocument? document =
-            (current as CodeEditor2.Data.TextFile)?.CodeDocument;
+        // instantiated module's source file for a deeper level (an instance
+        // shares its source file's document). The expand token has to name
+        // THAT document - it addresses the instance inside the file it is
+        // written in, not the file it points at. Clicking, by contrast, opens
+        // the child's own file (see CreateDescriptor), so the two are kept
+        // apart: ExpandUri here, Uri there.
         string? documentUri = ProjectOwner?.GetUriForRelativePath(current.RelativePath);
 
         foreach (CodeEditor2.Data.Item child in GetUpdatedChildren(current))
         {
-            HierarchyNodeDescriptor descriptor = CreateDescriptor(child, documentUri, document);
+            HierarchyNodeDescriptor descriptor = CreateDescriptor(child, documentUri);
             descriptor.InstancePathSegments.AddRange(parentSegments);
             descriptor.InstancePathSegments.Add(child.Name);
             descriptor.InstancePath = string.Join(".", descriptor.InstancePathSegments);
@@ -906,29 +894,50 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// </summary>
     private HierarchyNodeDescriptor CreateDescriptor(
         CodeEditor2.Data.Item item,
-        string? documentUri,
-        CodeEditor2.CodeEditor.CodeDocument? document)
+        string? documentUri)
     {
         HierarchyNodeDescriptor node = new()
         {
             Label = item.Name,
             Detail = DescribeItem(item),
-            // The node opens the document its instantiation is written in (the
-            // file being expanded), not the instantiated module's own source:
-            // startLine / startCharacter are offsets into that document.
-            Uri = documentUri ?? ResolveItemUri(item),
+            // Clicking the node opens the item's OWN file, exactly like the
+            // editor's NavigatePanel: selecting a module instance calls
+            // SetTextFileAsync(instance) and shows the instantiated module's
+            // source, not the file the instantiation is written in. (Opening
+            // the parent file here was the bug: clicking "AAA" under
+            // PartialAssign.sv opened PartialAssign.sv instead of
+            // moduleSample.v.)
+            Uri = ResolveItemUri(item),
+            // Expanding, on the other hand, has to look the instance up in the
+            // file its instantiation is written in, so the expand token keeps
+            // addressing that document.
+            ExpandUri = documentUri ?? ResolveItemUri(item),
             HasChildren = CanExpand(item),
             Icon = ResolveItemIcon(item),
             IconColor = ResolveItemIconColor(item),
         };
 
-        // position of the instantiating statement (click-to-jump), resolved
-        // against the document that contains it
+        // Click-to-jump position, resolved against the file the node OPENS (the
+        // instantiated module's own source), so the caret lands on the module
+        // declaration there. The instantiation statement's position belongs to
+        // the parent document, which is no longer the file being opened.
         pluginVerilog.Verilog.Items.IBuildingBlockInstantiation? inst = GetInstantiatingItem(item);
-        if (inst?.BeginIndexReference != null)
+        pluginVerilog.Verilog.BuildingBlocks.BuildingBlock? instanced = null;
+        try
         {
-            node.StartLine = GetLineOfIndex(document, inst.BeginIndexReference.Index);
-            node.StartCharacter = GetCharacterOfIndex(document, inst.BeginIndexReference.Index);
+            instanced = inst?.GetInstancedBuildingBlock();
+        }
+        catch (Exception)
+        {
+            // an unresolved cross-project instance may throw; the position is
+            // cosmetic, so never fail the listing over it
+        }
+        if (instanced?.NameReference != null
+            && instanced.File is CodeEditor2.Data.TextFile instancedFile)
+        {
+            CodeEditor2.CodeEditor.CodeDocument? instancedDocument = instancedFile.CodeDocument;
+            node.StartLine = GetLineOfIndex(instancedDocument, instanced.NameReference.Index);
+            node.StartCharacter = GetCharacterOfIndex(instancedDocument, instanced.NameReference.Index);
         }
 
         // absolute paths for the file operations (Add / Delete / Open in
@@ -1127,26 +1136,50 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
-    /// URI of the file a node lives in, so clicking it opens the right
-    /// document. Instances share their source file's document; imported
-    /// packages / include headers point at their own file.
+    /// URI of the file the node OPENS when clicked: the item's own file. For a
+    /// module / interface instance that is the instantiated module's source
+    /// (the editor's NavigatePanel opens the instance's source file too), for
+    /// an imported package / include header it is the package / header file.
+    ///
+    /// <para>
+    /// This is deliberately NOT the file the instantiation is written in: that
+    /// one is only used to build the expand token (see
+    /// <see cref="HierarchyNodeDescriptor.ExpandUri"/>). Opening the parent
+    /// file here was the bug where clicking an instance under PartialAssign.sv
+    /// opened PartialAssign.sv instead of the instantiated moduleSample.v.
+    /// </para>
     /// </summary>
     private string? ResolveItemUri(CodeEditor2.Data.Item item)
     {
         string? relativePath = item.RelativePath;
         string? uri = ProjectOwner?.GetUriForRelativePath(relativePath);
+        // Fall back to this file's own URI when the item's file is not loaded
+        // (an include that was never opened): better to open something than to
+        // leave the click without a target.
         return uri ?? Id;
     }
 
+    /// <summary>
+    /// 0-based line of <paramref name="index"/> in <paramref name="doc"/>.
+    ///
+    /// <para>
+    /// <c>CodeDocument.GetLineAt</c> returns AvaloniaEdit's 1-based
+    /// <c>LineNumber</c>, while LSP positions are 0-based, so the value is
+    /// converted here. Returning the raw 1-based number put every hierarchy
+    /// node one line below its declaration.
+    /// </para>
+    /// </summary>
     private static int? GetLineOfIndex(CodeEditor2.CodeEditor.CodeDocument? doc, int index)
     {
         if (doc == null || index < 0 || index > doc.Length) return null;
-        return doc.GetLineAt(index);
+        return doc.GetLineAt(index) - 1;
     }
 
     private static int? GetCharacterOfIndex(CodeEditor2.CodeEditor.CodeDocument? doc, int index)
     {
         if (doc == null || index < 0 || index > doc.Length) return null;
+        // GetLineAt is 1-based (AvaloniaEdit LineNumber) and GetLineStartIndex
+        // takes that same 1-based number, so the subtraction is consistent.
         int line = doc.GetLineAt(index);
         return index - doc.GetLineStartIndex(line);
     }

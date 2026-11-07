@@ -750,9 +750,31 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             parentSegments.Add(next.Name);
         }
 
+        // The children's instantiations are written in the document that was
+        // parsed to produce them: the file itself for the first level, or the
+        // instantiated module's source file for a deeper level. Their
+        // startLine / startCharacter are offsets into THAT document, and
+        // clicking the node has to open it - not the file the instance points
+        // at (the instantiated module's own source).
+        //
+        // Getting this wrong broke expansion: the expand token names the file
+        // the instance LIVES IN, so a token built from the instantiated
+        // module's own source made the next request look for the instance
+        // inside the wrong file and come back empty (the arrow was drawn but
+        // the level never filled in).
+        // The document that contains the children's instantiations: the file
+        // itself for the first level, or the instantiated module's source file
+        // for a deeper level (an instance shares its source file's document).
+        // Their startLine / startCharacter are offsets into THAT document, and
+        // the expand token has to name it too - the token addresses the
+        // instance inside the file it is written in, not the file it points at.
+        CodeEditor2.CodeEditor.CodeDocument? document =
+            (current as CodeEditor2.Data.TextFile)?.CodeDocument;
+        string? documentUri = ProjectOwner?.GetUriForRelativePath(current.RelativePath);
+
         foreach (CodeEditor2.Data.Item child in GetUpdatedChildren(current))
         {
-            HierarchyNodeDescriptor descriptor = CreateDescriptor(child);
+            HierarchyNodeDescriptor descriptor = CreateDescriptor(child, documentUri, document);
             descriptor.InstancePathSegments.AddRange(parentSegments);
             descriptor.InstancePathSegments.Add(child.Name);
             descriptor.InstancePath = string.Join(".", descriptor.InstancePathSegments);
@@ -882,24 +904,31 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// lazily on expansion (see <see cref="GetHierarchyChildren"/>), so only
     /// the expandability is recorded here.
     /// </summary>
-    private HierarchyNodeDescriptor CreateDescriptor(CodeEditor2.Data.Item item)
+    private HierarchyNodeDescriptor CreateDescriptor(
+        CodeEditor2.Data.Item item,
+        string? documentUri,
+        CodeEditor2.CodeEditor.CodeDocument? document)
     {
         HierarchyNodeDescriptor node = new()
         {
             Label = item.Name,
             Detail = DescribeItem(item),
-            Uri = ResolveItemUri(item),
+            // The node opens the document its instantiation is written in (the
+            // file being expanded), not the instantiated module's own source:
+            // startLine / startCharacter are offsets into that document.
+            Uri = documentUri ?? ResolveItemUri(item),
             HasChildren = CanExpand(item),
             Icon = ResolveItemIcon(item),
             IconColor = ResolveItemIconColor(item),
         };
 
-        // position of the instantiating statement (click-to-jump)
+        // position of the instantiating statement (click-to-jump), resolved
+        // against the document that contains it
         pluginVerilog.Verilog.Items.IBuildingBlockInstantiation? inst = GetInstantiatingItem(item);
         if (inst?.BeginIndexReference != null)
         {
-            node.StartLine = GetLineOfIndex(inst.BeginIndexReference.Index);
-            node.StartCharacter = GetCharacterOfIndex(inst.BeginIndexReference.Index);
+            node.StartLine = GetLineOfIndex(document, inst.BeginIndexReference.Index);
+            node.StartCharacter = GetCharacterOfIndex(document, inst.BeginIndexReference.Index);
         }
 
         // absolute paths for the file operations (Add / Delete / Open in
@@ -1109,20 +1138,20 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         return uri ?? Id;
     }
 
-    private int? GetLineOfIndex(int index)
+    private static int? GetLineOfIndex(CodeEditor2.CodeEditor.CodeDocument? doc, int index)
     {
-        CodeEditor2.CodeEditor.CodeDocument? doc = _parsedDocument?.CodeDocument;
         if (doc == null || index < 0 || index > doc.Length) return null;
         return doc.GetLineAt(index);
     }
 
-    private int? GetCharacterOfIndex(int index)
+    private static int? GetCharacterOfIndex(CodeEditor2.CodeEditor.CodeDocument? doc, int index)
     {
-        CodeEditor2.CodeEditor.CodeDocument? doc = _parsedDocument?.CodeDocument;
         if (doc == null || index < 0 || index > doc.Length) return null;
         int line = doc.GetLineAt(index);
         return index - doc.GetLineStartIndex(line);
     }
+
+
 
     /// <summary>
     /// LSP textDocument/completion support: runs the plugin's

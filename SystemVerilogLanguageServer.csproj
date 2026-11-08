@@ -7,6 +7,24 @@
     <Nullable>enable</Nullable>
     <LangVersion>latest</LangVersion>
     <RootNamespace>SystemVerilogLanguageServer</RootNamespace>
+
+    <!-- A publish of this project is bundled into vscode-extension/server/ and
+         shipped inside the .vsix, so it must stay small. Two defaults work
+         against that:
+
+           1. referenced packages ship their symbols regardless of
+              -p:DebugType=none, which alone added ~250 MB of SkiaSharp /
+              HarfBuzzSharp .pdb files to the published folder
+           2. the native assets of every supported platform land under
+              runtimes/<rid>; only the host platform's copy can ever load
+
+         Setting these here means a plain `dotnet publish -o <dir>` cannot
+         reintroduce the bloat (server/ once reached 734 MB / 314 files, and a
+         folder that large makes the VS Code extension development host die
+         with SIGABRT / exit code 134 right after
+         "Loading development extension"). vscode-extension/scripts/bundle-server.js
+         still empties the folder first and prunes the per-platform runtimes. -->
+    <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
   </PropertyGroup>
 
   <ItemGroup>

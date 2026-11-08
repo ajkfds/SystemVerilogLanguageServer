@@ -1489,12 +1489,22 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         // top.sv opens child.sv, but the instance lives in top.sv. Walk the
         // parent's item tree to find it, then parse THIS file with the
         // instance's parameter overrides.
-        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginFileForUri(parentUri) ?? GetPluginVerilogFile();
-        if (pluginFile == null) return false;
+        // The instance PATH is resolved in the parent's tree, but the document
+        // being parsed is THIS file. Passing the parent's VerilogFile to the
+        // parser made it build the ParsedDocument (and its CodeDocument) on the
+        // WRONG file: the document's TextFile / SystemVerilog flag came from the
+        // parent (a .sv file), and only part of the text ended up coloured, so
+        // the syntax highlighting collapsed after the instance was clicked.
+        pluginVerilog.Data.VerilogFile? parentPluginFile = GetPluginFileForUri(parentUri);
+        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile() ?? parentPluginFile;
+        if (pluginFile == null || parentPluginFile == null) return false;
 
         // Walk the instance path with the editor's Updater so each level's
         // Items collection is populated (same as GetHierarchyChildren).
-        CodeEditor2.Data.Item current = pluginFile;
+        // NOTE: the walk starts from the PARENT file (the tree the instance
+        // path is relative to), while `pluginFile` (this file) is what gets
+        // parsed below.
+        CodeEditor2.Data.Item current = parentPluginFile;
         foreach (string segment in instancePath)
         {
             CodeEditor2.Data.Item? next = null;

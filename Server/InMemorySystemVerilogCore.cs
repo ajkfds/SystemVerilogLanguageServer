@@ -1573,7 +1573,61 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         }
         BuildSymbolsFromParsedDocument(parsed, CodeDocumentText);
         SetDiagnostics(CollectDiagnostics(parsed));
+
+        // The instance's own result is not the only entry that must exist: the
+        // EDITOR reads the opened document through
+        //   InstanceTextFile.ParsedDocument
+        //     -> source.GetInstancedParsedDocument(KeyGenerator(source, name, overrides))
+        // (see Data/InstanceTextFile.cs and Data/VerilogModuleInstance.cs).
+        // Parsing just THIS instance registers THIS instance's key only, so an
+        // instance node clicked under another parent (e.g. moduleSample's
+        // parameter-overridden instance under mod2.v, or the file's own base
+        // entry) still resolved to nothing and the editor showed the plain,
+        // un-overridden declaration. Make sure every instance reachable from
+        // this file's item tree has a registered parse result, building it with
+        // the instance's own parameter overrides.
+        //
+        // The tree to walk is the BASE file's (the parent the path was resolved
+        // in): nested instances live under it, not under the instantiated
+        // module's own file.
+        EnsureInstanceTreeParsed(basePluginFile);
+
         return true;
+    }
+
+    /// <summary>
+    /// Parses (with its parameter overrides) every instance under
+    /// <paramref name="root"/> that has no registered parse result yet, so
+    /// <c>InstanceTextFile.ParsedDocument</c> resolves for all of them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// An instance's parse result is stored on the source file, keyed by
+    /// <c>ParsedDocument.KeyGenerator(source, instanceName, parameterOverrides)</c>.
+    /// The editor fills those entries through
+    /// <c>VerilogFile.AcceptParsedDocumentAsync</c>. A UI-less host only walks
+    /// the tree for the hierarchy view, so the entries stayed empty: clicking a
+    /// node then opened the source with its DECLARED parameters instead of the
+    /// overrides written at the instantiation.
+    /// </para>
+    /// <para>
+    /// Uses <see cref="EnsureInstanceParsed"/> (the editor's lazy per-instance
+    /// parse) and recurses into the children it just materialised, so nested
+    /// instances are covered too. Depth is bounded to keep a pathological
+    /// (recursive) instance chain from running away.
+    /// </para>
+    /// </remarks>
+    private void EnsureInstanceTreeParsed(CodeEditor2.Data.Item root, int depth = 0)
+    {
+        if (depth > 32) return;
+
+        foreach (CodeEditor2.Data.Item child in root.Items.GetSnapShot())
+        {
+            if (child is not pluginVerilog.Data.IVerilogRelatedFile verilogChild) continue;
+
+            EnsureInstanceParsed(verilogChild);
+            EnsureInstanceTreeParsed(child, depth + 1);
+        }
     }
 
     private pluginVerilog.Data.VerilogFile? _verilogFile;

@@ -2045,11 +2045,86 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         List<TokenInfo>? parserTokens = GetParserColorTokens();
         if (parserTokens != null && parserTokens.Count > 0)
         {
+            parserTokens = NormalizeTokens(parserTokens);
             _cachedTokens = parserTokens;
             return parserTokens;
         }
-        return _cachedTokens ??= LightweightParser.Parse(((InMemoryCodeDocument)CodeDocument).GetText()).Tokens;
+        return _cachedTokens ??= NormalizeTokens(
+            LightweightParser.Parse(((InMemoryCodeDocument)CodeDocument).GetText()).Tokens);
     }
+
+    /// <summary>
+    /// Make a token list a valid LSP semantic-token stream: strictly
+    /// increasing start offsets, no duplicates and no overlaps.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The real parser writes the same span more than once. A module instance
+    /// port connection such as <c>.AA ( aaaa )</c> gets both the generic
+    /// reference colour and the data-object colour for <c>AA</c> / <c>aaaa</c>
+    /// (observed on <c>verilog_sample/mySample/mod2.v</c>: <c>AA</c> as
+    /// Identifier + Net and <c>aaaa</c> as Net + Identifier at the exact same
+    /// offset), and declarations are coloured by both the declaration path and
+    /// the identifier path.
+    /// </para>
+    /// <para>
+    /// Emitting them all breaks two rules VS Code enforces on semantic tokens:
+    /// the stream must be sorted, and a token must not overlap the previous
+    /// one. VS Code logs <c>Overlapping semantic tokens detected at
+    /// lineNumber N, column M</c> and drops the offending token, so the span
+    /// silently loses its colour. Folding the duplicates here keeps the most
+    /// specific type (register / net / parameter ... over the generic
+    /// "identifier") and makes the rest of the stream valid.
+    /// </para>
+    /// </remarks>
+    internal static List<TokenInfo> NormalizeTokens(List<TokenInfo> tokens)
+    {
+        if (tokens.Count <= 1) return tokens;
+
+        List<TokenInfo> sorted = new(tokens);
+        sorted.Sort((a, b) =>
+        {
+            int byStart = a.Start.CompareTo(b.Start);
+            if (byStart != 0) return byStart;
+            // same start: most specific type first, then the longest span
+            int byPriority = TokenTypePriority(a.Type).CompareTo(TokenTypePriority(b.Type));
+            if (byPriority != 0) return byPriority;
+            return b.End.CompareTo(a.End);
+        });
+
+        List<TokenInfo> result = new(sorted.Count);
+        int coveredEnd = -1;
+        foreach (TokenInfo token in sorted)
+        {
+            if (token.End <= token.Start) continue;     // empty span
+            if (token.Start < coveredEnd) continue;     // overlaps an emitted token
+            result.Add(token);
+            coveredEnd = token.End;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Ranking used by <see cref="NormalizeTokens"/> when two tokens start at
+    /// the same offset: a smaller value wins. A concrete data type
+    /// (register / net / parameter / variable) is more informative than the
+    /// generic "identifier" the reference path emits.
+    /// </summary>
+    private static int TokenTypePriority(TokenTypes type) => type switch
+    {
+        TokenTypes.Register => 0,
+        TokenTypes.Property => 1,   // net
+        TokenTypes.Parameter => 2,
+        TokenTypes.Variable => 3,
+        TokenTypes.Type => 4,
+        TokenTypes.Function => 5,
+        TokenTypes.Macro => 6,
+        TokenTypes.Keyword => 7,
+        TokenTypes.Number => 8,
+        TokenTypes.String => 9,
+        TokenTypes.Comment => 10,
+        _ => 11,                    // identifier (generic reference)
+    };
 
     /// <summary>
     /// Builds tokens from the real parser's per-line color segments via the

@@ -148,6 +148,21 @@ internal sealed class InMemoryProject : ISystemVerilogProject
 
     public InMemoryFile AddOrUpdateFile(string id, string? absolutePath, string text, bool isSystemVerilog)
     {
+        // Reuse the existing entry when the file is already known: it carries
+        // per-document state that a fresh instance would lose - most notably
+        // SelectedInstance (the instance the document was clicked open AS), so
+        // recreating it on every didChange silently dropped the instantiation's
+        // parameter overrides after the first keystroke.
+        if (_files.TryGetValue(id, out InMemoryFile? existing))
+        {
+            existing.SetText(text);
+            // Keep the plugin item in sync exactly like the create path does:
+            // it carries the text the editor's Updater reads and drops the
+            // per-instance parse cache so an expand re-parses the new text.
+            RegisterPluginItem(existing);
+            return existing;
+        }
+
         InMemoryFile file = new(id, absolutePath, isSystemVerilog, text);
         file.ProjectOwner = this;
         _files[id] = file;
@@ -607,6 +622,24 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         _codeDocument = new InMemoryCodeDocument(text);
         _document = null;
         _verilogFile = null;
+
+        // The cached parse result describes the OLD text, so it must not be
+        // reused: mark the file unbuilt and drop the symbol tables. A fresh
+        // InMemoryFile used to provide this implicitly (AddOrUpdateFile created
+        // one on every update), but the entry is now reused so that per-document
+        // state - SelectedInstance - survives an edit.
+        lock (_buildLock)
+        {
+            _allElements.Clear();
+            _byName.Clear();
+            _buildingBlocks.Clear();
+            _members.Clear();
+            lock (_diagnosticsLock) { _diagnostics.Clear(); }
+            _parsedDocument = null;
+            _document = null;
+            _built = false;
+            _cachedTokens = null;
+        }
     }
 
     /// <summary>
@@ -1517,6 +1550,42 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
+    /// The instance this document was last opened AS (clicked in the RTL
+    /// Hierarchy), so edits keep parsing it with the same parameter overrides.
+    /// Null for a plain file that was never opened as an instance.
+    /// </summary>
+    internal InstanceSelection? SelectedInstance { get; private set; }
+
+    /// <summary>
+    /// An instance a document is displayed as: the file the instantiation is
+    /// written in, the instantiated building-block name and the parameter
+    /// overrides written there.
+    /// </summary>
+    internal sealed class InstanceSelection
+    {
+        public string? ParentUri { get; set; }
+        public required string ModuleName { get; set; }
+        public required Dictionary<string, pluginVerilog.Verilog.Expressions.Expression> ParameterOverrides { get; set; }
+    }
+
+    /// <summary>
+    /// Re-parses the current text AS the instance that was last selected, so an
+    /// edit does not silently drop the parameter overrides: the editor keeps
+    /// editing the INSTANCE, not the file, so its parse result must stay the
+    /// parameter-overridden one for every subsequent edit.
+    /// </summary>
+    /// <returns>
+    /// True when the document was re-parsed as an instance; false when there is
+    /// no instance selection (the caller then does a plain file parse).
+    /// </returns>
+    internal bool RebuildAsSelectedInstance()
+    {
+        InstanceSelection? selection = SelectedInstance;
+        if (selection == null) return false;
+        return ParseAndApplyInstance(selection.ParentUri, selection.ModuleName, selection.ParameterOverrides);
+    }
+
+    /// <summary>
     /// Re-parses this file AS the instance addressed by
     /// <paramref name="instancePath"/> (a chain of child names from the file
     /// root), so the parameter overrides written at the instantiation are
@@ -1531,6 +1600,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// <c>#(.P_WIDTH(5))</c> would still be shown with <c>P_WIDTH = 8</c> and
     /// every width derived from it would be wrong. This method reproduces the
     /// editor's behaviour for the LSP host.
+    /// </para>
+    ///
+    /// <para>
+    /// The chain is resolved first (it may address a nested instance), then the
+    /// parse itself is delegated to <see cref="ParseAndApplyInstance"/>, which is
+    /// shared with the re-parse-after-edit path.
     /// </para>
     ///
     /// <para>
@@ -1552,21 +1627,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         // immediate parent (mod2.v, which does not declare "aaabb") fails and
         // the click silently degraded to a plain file parse - the parameter
         // overrides were then ignored, which is the reported symptom.
-        //
-        // The tree is walked on the BASE file, while the document that gets
-        // parsed is THIS file (the instantiated module's source). Passing the
-        // base file to the parser made it build the ParsedDocument (and its
-        // CodeDocument) on the WRONG file: the TextFile / SystemVerilog flag
-        // came from the base file and only part of the text ended up coloured,
-        // so the syntax highlighting collapsed after the instance was clicked.
         pluginVerilog.Data.VerilogFile? basePluginFile = GetPluginFileForUri(parentUri);
-        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile() ?? basePluginFile;
-        if (pluginFile == null || basePluginFile == null) return false;
+        if (basePluginFile == null) return false;
 
         // Walk the instance path with the editor's Updater so each level's
         // Items collection is populated (same as GetHierarchyChildren).
-        // NOTE: the walk starts from the chain's BASE file (the tree the path is
-        // relative to), while `pluginFile` (this file) is what gets parsed below.
         CodeEditor2.Data.Item current = basePluginFile;
         foreach (string segment in instancePath)
         {
@@ -1585,26 +1650,47 @@ internal sealed class InMemoryFile : ISystemVerilogFile
 
         // The target must be an instance (module / interface): only those carry
         // parameter overrides and a target building-block name.
-        string? moduleName;
-        Dictionary<string, pluginVerilog.Verilog.Expressions.Expression> overrides;
         switch (current)
         {
             case pluginVerilog.Data.VerilogModuleInstance module:
-                moduleName = module.InstanceName;
-                overrides = module.ParameterOverrides;
-                break;
+                return ParseAndApplyInstance(parentUri, module.InstanceName, module.ParameterOverrides);
             case pluginVerilog.Data.InterfaceInstance iface:
-                moduleName = iface.InstanceName;
-                overrides = iface.ParameterOverrides;
-                break;
+                return ParseAndApplyInstance(parentUri, iface.InstanceName, iface.ParameterOverrides);
             default:
                 return false;
         }
+    }
+
+    /// <summary>
+    /// Parses this document with the given instance's parameter overrides and
+    /// replaces the current parse result. Shared by the click path
+    /// (<see cref="RebuildAsInstance"/>) and the re-parse-after-edit path
+    /// (<see cref="RebuildAsSelectedInstance"/>).
+    /// </summary>
+    private bool ParseAndApplyInstance(
+        string? parentUri,
+        string moduleName,
+        Dictionary<string, pluginVerilog.Verilog.Expressions.Expression> overrides)
+    {
+        if (_manualSymbols) return false;
         if (string.IsNullOrEmpty(moduleName)) return false;
+
+        // The tree is walked on the BASE file (by the caller when the chain is
+        // resolved), while the document that gets parsed is THIS file (the
+        // instantiated module's source).
+        pluginVerilog.Data.VerilogFile? basePluginFile = GetPluginFileForUri(parentUri);
+        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile() ?? basePluginFile;
+        if (pluginFile == null || basePluginFile == null) return false;
 
         pluginVerilog.Verilog.ParsedDocument? parsed;
         try
         {
+            // The document being parsed is THIS file, not the base (parent) file
+            // the instance path was resolved in: passing the base file made the
+            // parser build the ParsedDocument (and its CodeDocument) on the
+            // WRONG file (its TextFile / SystemVerilog flag / colour table), so
+            // only part of the opened text ended up coloured - the syntax
+            // highlighting collapsed after the instance was clicked.
             parsed = pluginVerilog.CoreBridge.ParseEngine.ParseInstanceAsync(
                 CodeDocumentText, pluginFile, moduleName, overrides).GetAwaiter().GetResult();
         }
@@ -1614,6 +1700,22 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             return false;
         }
         if (parsed?.Root == null) return false;
+
+        // Remember WHICH instance this document is now showing, so later edits
+        // keep parsing it as that instance.
+        //
+        // The overrides are kept as the parsed Expression objects themselves:
+        // they belong to the PARENT file's parse (which the user is not
+        // editing), so they stay valid, and reusing the identical expressions
+        // keeps ParsedDocument.KeyGenerator stable - that is what makes the
+        // re-parse after an edit produce the parameter-overridden result again
+        // instead of falling back to the declared defaults.
+        SelectedInstance = new InstanceSelection
+        {
+            ParentUri = parentUri,
+            ModuleName = moduleName,
+            ParameterOverrides = overrides,
+        };
 
         lock (_buildLock)
         {

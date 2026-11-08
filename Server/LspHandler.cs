@@ -945,8 +945,22 @@ public sealed partial class LspHandler
         // an edit means the buffer no longer matches the file on disk: the
         // hierarchy shows the editor's "unsaved edits" shine badge for it
         file.SetDirty(true);
-        // parse eagerly so the first query after an edit sees real-parser results
-        file.ForceBuild();
+        // Re-parse so the first query after an edit sees real-parser results.
+        //
+        // If the document is open AS AN INSTANCE (the user clicked it in the RTL
+        // Hierarchy), it must keep being parsed with that instance's parameter
+        // overrides: parsing the plain file would silently drop them, so the
+        // editor would show the DECLARED parameter values after the first edit
+        // (diagnostics, widths and colours would all jump back to the defaults).
+        // RebuildAsSelectedInstance() re-uses the recorded selection; a plain
+        // file falls through to the normal parse.
+        if (!file.RebuildAsSelectedInstance())
+        {
+            // plain file (never opened as an instance): a full re-parse is what
+            // makes the edited text take effect (ForceBuild alone is a no-op
+            // once the file has been built)
+            file.Rebuild();
+        }
         PushDiagnostics(project, uri);
     }
 
@@ -1025,7 +1039,8 @@ public sealed partial class LspHandler
             // text changed outside didChange (e.g. format-on-save): update it
             mem.SetText(text);
         }
-        mem.Rebuild();
+        // keep parsing as the instance that was opened (see HandleDidChange)
+        if (!mem.RebuildAsSelectedInstance()) mem.Rebuild();
         // the buffer now matches the file on disk: drop the "unsaved edits" badge
         mem.SetDirty(false);
         PushDiagnostics(project, uri);

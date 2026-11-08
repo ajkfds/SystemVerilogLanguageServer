@@ -942,6 +942,9 @@ public sealed partial class LspHandler
         ISystemVerilogFile? existing = project.FindFile(uri);
         bool isSystemVerilog = existing?.IsSystemVerilog ?? true;
         InMemoryFile file = project.AddOrUpdateFile(uri, UriToAbsolutePath(uri), text, isSystemVerilog);
+        // an edit means the buffer no longer matches the file on disk: the
+        // hierarchy shows the editor's "unsaved edits" shine badge for it
+        file.SetDirty(true);
         // parse eagerly so the first query after an edit sees real-parser results
         file.ForceBuild();
         PushDiagnostics(project, uri);
@@ -1023,6 +1026,8 @@ public sealed partial class LspHandler
             mem.SetText(text);
         }
         mem.Rebuild();
+        // the buffer now matches the file on disk: drop the "unsaved edits" badge
+        mem.SetDirty(false);
         PushDiagnostics(project, uri);
         // a save can change the instance hierarchy (module signature, new
         // instantiations), so let the client redraw the tree
@@ -1639,15 +1644,30 @@ public sealed partial class LspHandler
             // the file's own lock, so a background parse replacing the list
             // cannot break the enumeration (which would fail the whole
             // rtl/hierarchy request and blank the tree).
+            // Error > warning > dirty, the same priority the editor's
+            // NavigatePanel icon uses (an exclamation triangle beats the shine).
+            // `badge` is the preferred representation (the client picks
+            // icons/{icon}-{badge}.svg); `iconColor` remains for clients that
+            // do not ship those assets.
             string? iconColor = null;
+            string? badge = null;
             if (project.FindFile(uri) is InMemoryFile parsedFile)
             {
-                iconColor = parsedFile.HighestDiagnosticSeverity() switch
+                switch (parsedFile.HighestDiagnosticSeverity())
                 {
-                    SystemVerilogSeverity.Error => "errorForeground",
-                    SystemVerilogSeverity.Warning => "editorWarning.foreground",
-                    _ => null,
-                };
+                    case SystemVerilogSeverity.Error:
+                        iconColor = "errorForeground";
+                        badge = "error";
+                        break;
+                    case SystemVerilogSeverity.Warning:
+                        iconColor = "editorWarning.foreground";
+                        badge = "warning";
+                        break;
+                    default:
+                        // no diagnostics: fall back to the unsaved-edits badge
+                        if (parsedFile.IsDirty) badge = "dirty";
+                        break;
+                }
             }
 
             // The icon name mirrors the editor's NavigatePanel: a SystemVerilog
@@ -1670,6 +1690,7 @@ public sealed partial class LspHandler
                 Detail = GetRelativePath(project, path) ?? name,
                 HasChildren = hasChildren,
                 Icon = iconName,
+                Badge = badge,
                 IconColor = iconColor,
                 ContextValue = "rtlFile",
                 Collapsible = hasChildren ? "collapsed" : "none",
@@ -1763,6 +1784,7 @@ public sealed partial class LspHandler
                 // / include header) so the tree distinguishes them, and the
                 // colour flags files with errors / warnings.
                 Icon = child.Icon ?? "module",
+                Badge = child.Badge,
                 IconColor = child.IconColor,
                 ContextValue = "rtlInstance",
                 Collapsible = child.HasChildren ? "collapsed" : "none",

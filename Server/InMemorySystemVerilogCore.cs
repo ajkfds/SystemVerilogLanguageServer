@@ -939,6 +939,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             ParentUri = Id,
             HasChildren = CanExpand(item),
             Icon = ResolveItemIcon(item),
+            Badge = ResolveItemBadge(item),
             IconColor = ResolveItemIconColor(item),
         };
 
@@ -1138,9 +1139,64 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
+    /// Badge to composite onto the node's icon, mirroring the editor's
+    /// NavigatePanel node badges. Null when the node has nothing to flag.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The editor draws two overlays on top of the file icon (see
+    /// <c>VerilogFileNode.GetIcon</c>): an exclamation triangle at the
+    /// bottom-left when the parsed document has errors (red) or warnings
+    /// (yellow), and a shine at the top-right when the document has unsaved
+    /// edits. At most one badge is drawn, in the priority order
+    /// error &gt; warning &gt; dirty, exactly like the editor's if/else-if chain.
+    /// </para>
+    /// <para>
+    /// The badge is a name rather than a colour because VS Code's
+    /// <c>TreeItem.iconPath</c> can only carry one icon and one theme colour, so
+    /// the overlay has to be composited into the SVG asset
+    /// (<c>icons/{icon}-{badge}.svg</c>).
+    /// </para>
+    /// </remarks>
+    private static string? ResolveItemBadge(CodeEditor2.Data.Item item)
+    {
+        if (item is not pluginVerilog.Data.IVerilogRelatedFile file) return null;
+
+        try
+        {
+            pluginVerilog.Verilog.ParsedDocument? parsed = file.VerilogParsedDocument;
+            if (parsed != null)
+            {
+                if (parsed.ErrorCount > 0) return "error";
+                if (parsed.WarningCount > 0) return "warning";
+            }
+        }
+        catch (Exception)
+        {
+            // an unresolved instance may not have a parse result yet; the
+            // badge is cosmetic, so never fail the listing over it
+        }
+
+        // Unsaved edits. InstanceTextFile shares the SOURCE file's CodeDocument,
+        // so an edited instance reports the same IsDirty as its source file -
+        // exactly what the editor's node icons show.
+        try
+        {
+            if (file.CodeDocument?.IsDirty == true) return "dirty";
+        }
+        catch (Exception)
+        {
+            // IsDirty touches the document; never let it break the listing
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// VS Code theme colour id used to flag a node whose file has errors or
-    /// warnings, mirroring the editor's exclamation badge on NavigatePanel
-    /// nodes. Null when the file is clean (or not parsed yet).
+    /// warnings. Kept as a fallback for clients that do not ship the
+    /// badge-composited assets; the tree prefers
+    /// <see cref="ResolveItemBadge"/>.
     /// </summary>
     private static string? ResolveItemIconColor(CodeEditor2.Data.Item item)
     {
@@ -2356,6 +2412,18 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             return highest;
         }
     }
+
+    /// <summary>
+    /// True when the in-memory text differs from what was last saved. The LSP
+    /// host keeps the editor's text in memory, so the editor's "unsaved edits"
+    /// shine badge has to come from tracking didChange / didSave here.
+    /// </summary>
+    internal bool IsDirty => _dirty;
+
+    /// <summary>Marks the buffer as edited (didChange) or saved (didSave).</summary>
+    internal void SetDirty(bool dirty) => _dirty = dirty;
+
+    private volatile bool _dirty;
 }
 
 /// <summary>A named element (declaration or reference) produced by the lightweight parser.</summary>

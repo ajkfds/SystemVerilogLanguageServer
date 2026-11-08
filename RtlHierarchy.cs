@@ -74,11 +74,30 @@ namespace SystemVerilogLanguageServer
 
         /// <summary>
         /// Optional VS Code theme colour id for the icon ("errorForeground" /
-        /// "editorWarning.foreground"), used to flag a node whose file has
-        /// errors / warnings. Null means "use the theme's default icon colour".
+        /// "editorWarning.foreground"), used to colour the plain icon when a
+        /// badge-specific asset is not shipped. Kept for clients that do not
+        /// know <see cref="Badge"/>; see <see cref="Badge"/> for the preferred
+        /// representation.
         /// </summary>
         [JsonPropertyName("iconColor")]
         public string? IconColor { get; set; }
+
+        /// <summary>
+        /// Badge drawn on top of the icon, mirroring the editor's NavigatePanel
+        /// node badges: <c>"error"</c> / <c>"warning"</c> (exclamation triangle,
+        /// bottom-left) and <c>"dirty"</c> (shine, top-right, unsaved edits).
+        /// Null when the node has nothing to flag.
+        ///
+        /// <para>
+        /// The client resolves <c>icons/{icon}-{badge}.svg</c> (light/dark) and
+        /// falls back to <c>icons/{icon}.svg</c>, so the badge is part of the
+        /// asset rather than a colour: VS Code's <c>TreeItem.iconPath</c> can
+        /// only hold one icon and one theme colour, so an overlay has to be
+        /// composited into the SVG.
+        /// </para>
+        /// </summary>
+        [JsonPropertyName("badge")]
+        public string? Badge { get; set; }
 
         /// <summary>
         /// <c>TreeItem.contextValue</c> ("rtlFolder" / "rtlFile" /
@@ -246,11 +265,18 @@ namespace SystemVerilogLanguageServer
         public string? Icon { get; set; }
 
         /// <summary>
-        /// VS Code theme colour id when the node's file has errors / warnings,
-        /// so the tree flags broken files the way the editor's NavigatePanel
-        /// does with its exclamation badge.
+        /// VS Code theme colour id when the node's file has errors / warnings
+        /// and no badge asset matched. See <see cref="Badge"/>.
         /// </summary>
         public string? IconColor { get; set; }
+
+        /// <summary>
+        /// Badge to composite onto the icon: <c>"error"</c> / <c>"warning"</c>
+        /// (exclamation triangle, bottom-left) or <c>"dirty"</c> (shine,
+        /// top-right). Null when the node is clean. At most one badge is set,
+        /// in the editor's priority order error &gt; warning &gt; dirty.
+        /// </summary>
+        public string? Badge { get; set; }
 
         public List<HierarchyNodeDescriptor> Children { get; } = new();
     }

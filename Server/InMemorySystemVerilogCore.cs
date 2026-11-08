@@ -750,19 +750,18 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             parentSegments.Add(next.Name);
         }
 
-        // The children's instantiations are written in the document that was
-        // parsed to produce them: the file itself for the first level, or the
-        // instantiated module's source file for a deeper level (an instance
-        // shares its source file's document). The expand token has to name
-        // THAT document - it addresses the instance inside the file it is
-        // written in, not the file it points at. Clicking, by contrast, opens
-        // the child's own file (see CreateDescriptor), so the two are kept
-        // apart: ExpandUri here, Uri there.
-        string? documentUri = ProjectOwner?.GetUriForRelativePath(current.RelativePath);
-
+        // The instance path accumulates from THIS file's root (the walk above
+        // starts at pluginFile), so the chain is only meaningful together with
+        // this file as its base. Feeding the immediate parent document instead
+        // (current.RelativePath) produced an unresolvable pair for depth >= 2:
+        // the chain still carried the ancestors (e.g. ["aaabb", "SS"]) while
+        // the base file was the parent (mod2.v), which does not declare
+        // "aaabb". Both the expand token and the click's instance path are
+        // therefore based on THIS file, and the client simply echoes the chain
+        // back (see CreateDescriptor -> ExpandUri / ParentUri).
         foreach (CodeEditor2.Data.Item child in GetUpdatedChildren(current))
         {
-            HierarchyNodeDescriptor descriptor = CreateDescriptor(child, documentUri);
+            HierarchyNodeDescriptor descriptor = CreateDescriptor(child);
             descriptor.InstancePathSegments.AddRange(parentSegments);
             descriptor.InstancePathSegments.Add(child.Name);
             descriptor.InstancePath = string.Join(".", descriptor.InstancePathSegments);
@@ -909,9 +908,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// lazily on expansion (see <see cref="GetHierarchyChildren"/>), so only
     /// the expandability is recorded here.
     /// </summary>
-    private HierarchyNodeDescriptor CreateDescriptor(
-        CodeEditor2.Data.Item item,
-        string? documentUri)
+    private HierarchyNodeDescriptor CreateDescriptor(CodeEditor2.Data.Item item)
     {
         HierarchyNodeDescriptor node = new()
         {
@@ -925,14 +922,21 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             // PartialAssign.sv opened PartialAssign.sv instead of
             // moduleSample.v.)
             Uri = ResolveItemUri(item),
-            // Expanding, on the other hand, has to look the instance up in the
-            // file its instantiation is written in, so the expand token keeps
-            // addressing that document.
-            ExpandUri = documentUri ?? ResolveItemUri(item),
+            // Expanding has to look the instance up in the item tree that was
+            // walked to produce it. That walk started at THIS file and the
+            // node's InstancePathSegments are a chain from this file's root, so
+            // the base document is this file - not the immediate parent
+            // (current.RelativePath). With the parent as base, a depth-2 node
+            // carried the ancestors in its chain ("aaabb/SS") while being
+            // resolved in mod2.v, which does not declare "aaabb": expansion
+            // returned nothing and, worse, clicking it fell back to a plain
+            // file parse (parameter defaults instead of the instance's
+            // overrides).
+            ExpandUri = Id,
             // The client echoes this back in rtl/reparse so the server can walk
-            // the parent's instance tree and parse the document AS this
-            // instance (parameter overrides applied).
-            ParentUri = documentUri,
+            // the instance tree of THIS file and parse the document AS this
+            // instance (parameter overrides applied). Same base as the path.
+            ParentUri = Id,
             HasChildren = CanExpand(item),
             Icon = ResolveItemIcon(item),
             IconColor = ResolveItemIconColor(item),
@@ -1484,27 +1488,30 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         if (instancePath.Count == 0) return false;
         if (_manualSymbols) return false;
 
-        // The instance path is relative to the file the instantiation is
-        // WRITTEN IN (the parent), not to this file: clicking "u_child" under
-        // top.sv opens child.sv, but the instance lives in top.sv. Walk the
-        // parent's item tree to find it, then parse THIS file with the
-        // instance's parameter overrides.
-        // The instance PATH is resolved in the parent's tree, but the document
-        // being parsed is THIS file. Passing the parent's VerilogFile to the
-        // parser made it build the ParsedDocument (and its CodeDocument) on the
-        // WRONG file: the document's TextFile / SystemVerilog flag came from the
-        // parent (a .sv file), and only part of the text ended up coloured, so
-        // the syntax highlighting collapsed after the instance was clicked.
-        pluginVerilog.Data.VerilogFile? parentPluginFile = GetPluginFileForUri(parentUri);
-        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile() ?? parentPluginFile;
-        if (pluginFile == null || parentPluginFile == null) return false;
+        // The path is a chain that starts at the file the expansion request was
+        // made on (the node chain's ROOT, sent as parentUri), not at this file
+        // and not at the immediate parent. GetHierarchyChildren walks from the
+        // expanded file and accumulates names from its root, so a depth-2 node
+        // carries its ancestors ("aaabb", "SS"): resolving that chain in the
+        // immediate parent (mod2.v, which does not declare "aaabb") fails and
+        // the click silently degraded to a plain file parse - the parameter
+        // overrides were then ignored, which is the reported symptom.
+        //
+        // The tree is walked on the BASE file, while the document that gets
+        // parsed is THIS file (the instantiated module's source). Passing the
+        // base file to the parser made it build the ParsedDocument (and its
+        // CodeDocument) on the WRONG file: the TextFile / SystemVerilog flag
+        // came from the base file and only part of the text ended up coloured,
+        // so the syntax highlighting collapsed after the instance was clicked.
+        pluginVerilog.Data.VerilogFile? basePluginFile = GetPluginFileForUri(parentUri);
+        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile() ?? basePluginFile;
+        if (pluginFile == null || basePluginFile == null) return false;
 
         // Walk the instance path with the editor's Updater so each level's
         // Items collection is populated (same as GetHierarchyChildren).
-        // NOTE: the walk starts from the PARENT file (the tree the instance
-        // path is relative to), while `pluginFile` (this file) is what gets
-        // parsed below.
-        CodeEditor2.Data.Item current = parentPluginFile;
+        // NOTE: the walk starts from the chain's BASE file (the tree the path is
+        // relative to), while `pluginFile` (this file) is what gets parsed below.
+        CodeEditor2.Data.Item current = basePluginFile;
         foreach (string segment in instancePath)
         {
             CodeEditor2.Data.Item? next = null;

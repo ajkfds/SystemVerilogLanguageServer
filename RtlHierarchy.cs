@@ -186,11 +186,19 @@ namespace SystemVerilogLanguageServer
         public string? Uri { get; set; }
 
         /// <summary>
-        /// File the instantiation is WRITTEN IN, used to build the expand token
-        /// (the token addresses the instance inside that file). This is not the
-        /// click target: clicking opens <see cref="Uri"/> (the instantiated
-        /// module's own source), while expanding has to look the instance up in
-        /// the parent file. Null for nodes that are not instances.
+        /// Base document of <see cref="InstancePathSegments"/>: the file whose
+        /// instance tree was walked to produce this node, i.e. the file the
+        /// expansion request was made on (the root of the node chain), used to
+        /// build the expand token. This is not the click target: clicking opens
+        /// <see cref="Uri"/> (the instantiated module's own source), while
+        /// expanding resolves the chain from this base file. Null for nodes that
+        /// are not instances.
+        ///
+        /// <para>
+        /// It must be the chain's ROOT file, not the immediate parent: the chain
+        /// keeps the ancestors ("aaabb/SS"), so resolving it against the parent
+        /// (mod2.v, which does not declare "aaabb") fails.
+        /// </para>
         /// </summary>
         public string? ExpandUri { get; set; }
 
@@ -215,9 +223,12 @@ namespace SystemVerilogLanguageServer
         public List<string> InstancePathSegments { get; } = new();
 
         /// <summary>
-        /// URI of the file the instantiation is written in (the parent), used
-        /// by the client to ask for an instance parse on click. Null for
-        /// non-instance nodes.
+        /// Base document of <see cref="InstancePathSegments"/>, sent back by the
+        /// client in <c>rtl/reparse</c> so the server walks the same instance
+        /// tree the node was produced from and parses the document AS that
+        /// instance (parameter overrides applied). Same base as
+        /// <see cref="ExpandUri"/>: the file the expansion request was made on,
+        /// not the immediate parent. Null for non-instance nodes.
         /// </summary>
         public string? ParentUri { get; set; }
 

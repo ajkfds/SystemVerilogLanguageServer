@@ -1781,10 +1781,10 @@ public sealed partial class LspHandler
                 FsPath = child.FsPath,
                 DirPath = child.DirPath,
                 // opaque token for the next expansion (null for leaves). The
-                // token addresses the instance inside the file its
-                // instantiation is WRITTEN IN (ExpandUri), which is not the
-                // file the node opens on click (Uri = the instantiated
-                // module's own source).
+                // token addresses the chain inside the file the expansion was
+                // requested on (ExpandUri = the chain's base, NOT the immediate
+                // parent), which is not the file the node opens on click
+                // (Uri = the instantiated module's own source).
                 ExpandToken = child.HasChildren && !string.IsNullOrEmpty(child.ExpandUri)
                     ? ExpandToken.ForInstance(child.ExpandUri!, child.InstancePathSegments)
                     : null,

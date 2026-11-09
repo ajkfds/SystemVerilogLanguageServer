@@ -58,7 +58,9 @@ namespace SystemVerilogLanguageServer
         // ---- only maps it onto the VS Code TreeItem) ----
 
         /// <summary>
-        /// Stable icon name: "folder" / "file" / "module" / "interface" /
+        /// Stable icon name: "folder" (a workspace directory, the editor's
+        /// FolderNode) / "project" (the workspace root when several folders are
+        /// open, the editor's ProjectNode) / "file" / "module" / "interface" /
         /// "package" / "header" / "systemverilog-document" /
         /// "verilog-document" / "verilog-header-document".
         ///
@@ -260,7 +262,10 @@ namespace SystemVerilogLanguageServer
         /// <summary>
         /// Stable icon name for the node, decided from the instantiated
         /// building block kind (module / interface / package / include header).
-        /// The client maps it onto the plugin's SVG assets.
+        /// For a directory the value is "folder" (the editor's FolderNode) and
+        /// for the workspace root when several folders are open it is
+        /// "project" (the editor's ProjectNode). The client maps it onto the
+        /// plugin's SVG assets.
         /// </summary>
         public string? Icon { get; set; }
 

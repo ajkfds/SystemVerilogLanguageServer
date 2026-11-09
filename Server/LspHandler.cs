@@ -1513,7 +1513,10 @@ public sealed partial class LspHandler
                     Kind = HierarchyNodeKind.Folder,
                     FolderPath = root,
                     HasChildren = true,
-                    Icon = "folder",
+                    // A workspace root is the equivalent of the editor's
+                    // ProjectNode ("home" icon), while ordinary directories use
+                    // the FolderNode icon. Both ship in the extension's icons/.
+                    Icon = "project",
                     ContextValue = "rtlFolder",
                     Collapsible = "collapsed",
                     Tooltip = root,

@@ -1390,6 +1390,24 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     }
 
     /// <summary>
+    /// rtl/toolMenu support: the tool menu (the desktop editor's Shift+Space
+    /// list) as data, with each row's availability decided by
+    /// <c>CoreBridge.ToolMenuAdapter</c>. The catalog itself lives in the plugin
+    /// so the editor and the extension never drift apart.
+    /// </summary>
+    internal pluginVerilog.CoreBridge.ToolMenuAdapter.ToolMenuResult? GetToolMenu(
+        int index,
+        int selectionStart,
+        int selectionEnd)
+    {
+        EnsureBuilt();
+        if (_parsedDocument == null) return null;
+        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        return pluginVerilog.CoreBridge.ToolMenuAdapter.Build(
+            verilogFile, _parsedDocument, index, selectionStart, selectionEnd);
+    }
+
+    /// <summary>
     /// rtl/autoConnect support: the auto-connect form for the module
     /// instantiation at <paramref name="index"/> (one row per port with the
     /// signal the editor would connect). The decision of <b>which signal

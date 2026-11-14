@@ -1370,10 +1370,19 @@ internal sealed class InMemoryFile : ISystemVerilogFile
 
     /// <summary>
     /// rtl/snippet support: the text the editor's snippet would insert at the
-    /// given index (module instantiation, alwaysFF, modport, port inversion,
-    /// port connection fill). The decision of <b>what</b> to insert lives in
-    /// the plugin's UI-free <c>CoreBridge.SnippetAdapter</c>; the host only
-    /// applies the returned text.
+    /// given index (module instantiation, alwaysFF, autoFormat, modport, port
+    /// inversion, port connection fill). The decision of <b>what</b> to insert
+    /// lives in the plugin's UI-free <c>CoreBridge.SnippetAdapter</c>; the host
+    /// only applies the returned text.
+    ///
+    /// <para>
+    /// An unknown <paramref name="name"/> is answered with
+    /// "unknown snippet: &lt;name&gt;" rather than an error. That message also
+    /// appears when the <b>server binary is older than the client</b> (a stale
+    /// publish bundled into vscode-extension/server), so the client shows a
+    /// "republish the server" hint for it; see
+    /// <c>memory/vscode_extension_debugging.md</c>.
+    /// </para>
     /// </summary>
     internal pluginVerilog.CoreBridge.SnippetAdapter.SnippetResult? GetSnippets(
         int index,

@@ -105,6 +105,20 @@ internal sealed class InMemoryProject : ISystemVerilogProject
     /// <summary>Guards <see cref="_pluginItems"/> and the plugin item tree.</summary>
     private readonly object _pluginItemLock = new();
 
+    /// <summary>
+    /// Points the shared plugin project at the workspace root, so that the
+    /// plugin's path helpers (<c>GetAbsolutePath</c> / <c>GetRelativePath</c>,
+    /// used by the hierarchy file operations and by SimulationSetup) resolve
+    /// against the real workspace instead of the placeholder root the stub was
+    /// created with (the workspace root is only known after <c>initialize</c>).
+    /// </summary>
+    internal void SetPluginRootPath(string rootPath)
+    {
+        if (string.IsNullOrEmpty(rootPath)) return;
+        if (string.Equals(PluginProject.RootPath, rootPath, StringComparison.OrdinalIgnoreCase)) return;
+        PluginProject.RootPath = rootPath;
+    }
+
     public InMemoryProject(string id)
     {
         Id = id;
@@ -842,7 +856,26 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// </summary>
     private void EnsureWorkspaceBuilt()
     {
-        InMemoryProject? project = ProjectOwner;
+        EnsureProjectBuilt(ProjectOwner);
+    }
+
+    /// <summary>
+    /// Builds every file of <paramref name="project"/> that has not been parsed
+    /// yet, so code that resolves cross-file references (the editor's Updater,
+    /// <c>SimulationSetup</c>) sees the whole workspace instead of only the
+    /// documents that happen to be open.
+    ///
+    /// <para>
+    /// <c>initialize</c> only scans the file list; parsing is lazy (and happens
+    /// in the background on a large workspace). A request that walks
+    /// instantiations - the hierarchy tree, the node menu's simulation setup -
+    /// therefore has to finish the parse first, otherwise the dependencies are
+    /// missing from the definition namespace and the collected list is
+    /// incomplete.
+    /// </para>
+    /// </summary>
+    internal static void EnsureProjectBuilt(InMemoryProject? project)
+    {
         if (project == null) return;
         foreach (ISystemVerilogFile file in project.Files)
         {
@@ -1312,6 +1345,40 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         if (_parsedDocument == null) return null;
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
         return pluginVerilog.CoreBridge.CompletionAdapter.GetCompletionItems(verilogFile, _parsedDocument, index);
+    }
+
+    /// <summary>
+    /// The plugin-side file for this document (parse result included), built on
+    /// demand. Exposed so requests that work on the plugin model directly (the
+    /// RTL Hierarchy node menu: simulation setup, node properties) can reach it
+    /// without going through the core adapters.
+    /// </summary>
+    internal pluginVerilog.Data.VerilogFile? GetPluginVerilogFilePublic()
+    {
+        EnsureBuilt();
+        if (_parsedDocument == null) return null;
+        return _verilogFile ??= CreateVerilogFile();
+    }
+
+    /// <summary>
+    /// Runs the editor's NavigatePanel update code on this file so its item tree
+    /// (<c>Data.Item.Items</c>) reflects the current parse result.
+    ///
+    /// <para>
+    /// Requests that walk the hierarchy through the plugin data model - the tree
+    /// expansion and the node menu's simulation setup - read
+    /// <c>file.Items</c> to find the instantiated building blocks. That
+    /// collection is only populated by <c>VerilogCommon.Updater.UpdateAsync</c>
+    /// (the editor runs it when a node is expanded); without it the item tree is
+    /// empty and a collection pass silently reports only the top file.
+    /// </para>
+    /// </summary>
+    internal void PrepareItemTree()
+    {
+        EnsureBuilt();
+        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile();
+        if (pluginFile == null) return;
+        GetUpdatedChildren(pluginFile);
     }
 
     /// <summary>

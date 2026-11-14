@@ -99,6 +99,12 @@ public sealed partial class LspHandler
         _requestHandlers["rtl/toolMenu"] = HandleToolMenu;
         _requestHandlers["rtl/autoConnect"] = HandleAutoConnect;
         _requestHandlers["rtl/autoConnectApply"] = HandleAutoConnectApply;
+        // RTL Hierarchy node menu. The rows live in the plugin's
+        // CoreBridge.HierarchyMenuCatalog, so a new entry (or one registered by
+        // another plugin) reaches VS Code without any client change: the
+        // extension only registers one static "Show Menu..." command.
+        _requestHandlers["rtl/hierarchyMenu"] = HandleHierarchyMenu;
+        _requestHandlers["rtl/hierarchyMenuInvoke"] = HandleHierarchyMenuInvoke;
 
         _notificationHandlers["initialized"] = HandleInitialized;
         _notificationHandlers["exit"] = HandleExit;
@@ -273,6 +279,11 @@ public sealed partial class LspHandler
         {
             if (!project.WorkspaceRoots.Contains(root)) project.WorkspaceRoots.Add(root);
         }
+        // The plugin project resolves relative paths against RootPath, which it
+        // could not know when it was created (before initialize). Without this
+        // the hierarchy file operations and the node menu's simulation setup
+        // produced paths under the placeholder temp directory.
+        if (project.WorkspaceRoots.Count > 0) project.SetPluginRootPath(project.WorkspaceRoots[0]);
 
         // The plugin item tree is keyed by the workspace-relative path, so it
         // can only be built once the roots are known. `include resolution goes
@@ -726,6 +737,7 @@ public sealed partial class LspHandler
                 if (string.IsNullOrEmpty(path)) continue;
                 if (!_workspaceRoots.Contains(path)) _workspaceRoots.Add(path);
                 if (!project.WorkspaceRoots.Contains(path)) project.WorkspaceRoots.Add(path);
+                project.SetPluginRootPath(path);
             }
         }
 
@@ -821,6 +833,7 @@ public sealed partial class LspHandler
         directory = FindProjectRoot(directory);
         _workspaceRoots.Add(directory);
         if (!project.WorkspaceRoots.Contains(directory)) project.WorkspaceRoots.Add(directory);
+        project.SetPluginRootPath(directory);
 
         // the root was unknown when the file was registered, so its plugin item
         // entry (if any) was keyed by the URI; re-key the whole tree now that
@@ -862,6 +875,7 @@ public sealed partial class LspHandler
             directory = FindProjectRoot(directory);
             if (!_workspaceRoots.Contains(directory)) _workspaceRoots.Add(directory);
             if (!project.WorkspaceRoots.Contains(directory)) project.WorkspaceRoots.Add(directory);
+            project.SetPluginRootPath(directory);
             project.RebuildPluginItemTree();
 
             // no eager scan / parse: the tree is built from the directory

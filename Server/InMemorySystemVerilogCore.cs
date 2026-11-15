@@ -1545,9 +1545,31 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// hints) into ISystemVerilogDiagnostic entries. The message Index/Length
     /// are document-relative so they map directly to LSP ranges.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The range must be the SAME span the editor marks for the message
+    /// (<c>ParsedDocument.AddWarning</c> calls
+    /// <c>document.Marks.SetMarkAt(index, length, ...)</c> with exactly these
+    /// values). It is not always a single token: a <c>floating input</c>
+    /// warning covers the whole empty port connection <c>(  )</c> and a
+    /// <c>bit width mismatch</c> covers the whole assignment expression.
+    /// </para>
+    /// <para>
+    /// This used to re-scan the identifier at <c>Message.Index</c> and ignore
+    /// <c>Message.Length</c> entirely, because the plugin's
+    /// <c>WordReference.Length</c> is the distance to the *next* token. That is
+    /// a property of <c>WordReference</c>, not of <c>Message.Length</c>: the
+    /// plugin builds the message length from the mark range it wants (measured
+    /// over the whole sv_tests corpus: 5075 of 5175 messages are exactly the
+    /// token width, and the rest are intentionally wider spans such as
+    /// <c>(  )</c> or <c>b || fun(c)</c>). Narrowing to the first token made
+    /// VS Code underline only <c>(</c> where the editor marks <c>(  )</c>.
+    /// </para>
+    /// </remarks>
     private static IEnumerable<ISystemVerilogDiagnostic> CollectDiagnostics(pluginVerilog.Verilog.ParsedDocument parsedDoc)
     {
         List<ISystemVerilogDiagnostic> result = new();
+        CodeEditor2.CodeEditor.CodeDocument? doc = parsedDoc.CodeDocument;
         foreach (CodeEditor2.CodeEditor.ParsedDocument.Message message in parsedDoc.Messages)
         {
             pluginVerilog.Verilog.ParsedDocument.Message? verilogMessage =
@@ -1564,35 +1586,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
             int start = message.Index;
             if (start < 0) continue; // skip messages without a document position
 
-            // The plugin's WordPointer length is the distance to the next
-            // token (an editor mark convention), not the word length. For
-            // LSP underlines the end must be the word end: scan the
-            // identifier at the message position.
-            CodeEditor2.CodeEditor.CodeDocument? doc = parsedDoc.CodeDocument;
-            int length = 1;
-            if (doc != null && start < doc.Length)
-            {
-                length = 0;
-                int i = start;
-                while (i < doc.Length && length < 256)
-                {
-                    char c = doc.GetCharAt(i);
-                    if (char.IsLetterOrDigit(c) || c == '_' || c == '$') { length++; i++; }
-                    else break;
-                }
-                if (length == 0)
-                {
-                    // non-identifier position (e.g. a punctuation token):
-                    // consume the token itself up to a delimiter
-                    while (i < doc.Length && length < 256)
-                    {
-                        char c = doc.GetCharAt(i);
-                        if (char.IsWhiteSpace(c) || c == '\r' || c == '\n') break;
-                        length++; i++;
-                    }
-                    if (length == 0) length = 1;
-                }
-            }
+            int length = GetDiagnosticLength(doc, start, message.Length);
             result.Add(new InMemoryDiagnostic(
                 severity,
                 code,
@@ -1600,6 +1594,43 @@ internal sealed class InMemoryFile : ISystemVerilogFile
                 new SystemVerilogRange(start, length)));
         }
         return result;
+    }
+
+    /// <summary>
+    /// Length of the diagnostic range: the span the editor marks for the same
+    /// message (<c>Message.Length</c>), clamped to the document and to a single
+    /// line so an LSP underline never spans lines.
+    /// </summary>
+    /// <param name="doc">The parsed document (null in a fallback host).</param>
+    /// <param name="start">Document offset of the message.</param>
+    /// <param name="messageLength">The plugin's mark length.</param>
+    /// <remarks>
+    /// <c>Message.Length</c> can legitimately be 0 (messages created without a
+    /// span, e.g. the "&gt;100 errors" summary at offset 0) and can end on a
+    /// line break (the <c>`unconnected_drive</c> argument check reports the
+    /// trailing newline). Both cases are repaired here: a zero length becomes
+    /// one character, and a span that reaches a line break is cut before it.
+    /// </remarks>
+    private static int GetDiagnosticLength(CodeEditor2.CodeEditor.CodeDocument? doc, int start, int messageLength)
+    {
+        if (doc == null || start >= doc.Length) return 1;
+
+        int length = messageLength;
+        int available = doc.Length - start;
+        if (length > available) length = available;
+        if (length <= 0) return 1;
+
+        for (int i = 0; i < length; i++)
+        {
+            char c = doc.GetCharAt(start + i);
+            if (c == '\r' || c == '\n')
+            {
+                // stop before the line break; keep at least one character
+                length = i > 0 ? i : 1;
+                break;
+            }
+        }
+        return length;
     }
 
     private sealed class InMemoryDiagnostic : ISystemVerilogDiagnostic

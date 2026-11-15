@@ -21,6 +21,18 @@ internal static class Program
             return;
         }
 
+        // Prints the VS Code menu contributions the plugin's
+        // CoreBridge/HierarchyMenuCatalog defines. The extension's package.json
+        // is static, so the generated JSON is what makes a C#-defined entry
+        // appear as a native (and nestable) context-menu row. Run it after
+        // changing the catalog and paste the output into package.json.
+        if (args.Length > 0 && args[0] == "--hierarchy-menu-manifest")
+        {
+            Console.Out.Write(pluginVerilog.CoreBridge.HierarchyMenuManifest.ToJson());
+            Console.Out.Write('\n');
+            return;
+        }
+
         // Debugging transport: `--port <n>` makes the server listen on the
         // loopback interface instead of using stdin/stdout. The extension then
         // connects to that port (see SVLSP_SERVER_PORT in extension.js), which

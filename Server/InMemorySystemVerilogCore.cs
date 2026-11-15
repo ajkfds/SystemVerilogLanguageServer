@@ -2416,15 +2416,67 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         });
 
         List<TokenInfo> result = new(sorted.Count);
-        int coveredEnd = -1;
         foreach (TokenInfo token in sorted)
         {
             if (token.End <= token.Start) continue;     // empty span
-            if (token.Start < coveredEnd) continue;     // overlaps an emitted token
+
+            // A comment ANNOTATION is painted on top of the comment that
+            // contains it (`// @sync:clk`: Comment over the whole line,
+            // Annotation over "@sync:clk"). Dropping it as an overlap - which
+            // is what the plain "skip anything that starts before the last end"
+            // rule did - made annotations the same colour as the comment.
+            // Emit it instead, splitting the covering token around it so the
+            // stream still never overlaps.
+            if (IsNestedHighlight(token, result))
+            {
+                SplitAround(result, token);
+                continue;
+            }
+
+            if (result.Count > 0 && token.Start < result[result.Count - 1].End)
+            {
+                continue;                               // overlaps an emitted token
+            }
             result.Add(token);
-            coveredEnd = token.End;
         }
         return result;
+    }
+
+    /// <summary>
+    /// True when <paramref name="token"/> sits INSIDE the last emitted token and
+    /// is a comment annotation, i.e. the parser deliberately re-coloured part of
+    /// a comment.
+    /// </summary>
+    private static bool IsNestedHighlight(TokenInfo token, List<TokenInfo> emitted)
+    {
+        if (token.Type != TokenTypes.Annotation) return false;
+        if (emitted.Count == 0) return false;
+        TokenInfo last = emitted[emitted.Count - 1];
+        if (last.Type != TokenTypes.Comment) return false;
+        return token.Start >= last.Start && token.End <= last.End;
+    }
+
+    /// <summary>
+    /// Replaces the last emitted token with the parts of it that do not overlap
+    /// <paramref name="inner"/>, then appends <paramref name="inner"/>. Used to
+    /// punch an annotation out of the comment that covers it.
+    /// </summary>
+    private static void SplitAround(List<TokenInfo> emitted, TokenInfo inner)
+    {
+        TokenInfo outer = emitted[emitted.Count - 1];
+        emitted.RemoveAt(emitted.Count - 1);
+
+        // leading part (before the annotation)
+        if (inner.Start > outer.Start)
+        {
+            emitted.Add(new TokenInfo { Start = outer.Start, End = inner.Start, Type = outer.Type });
+        }
+        emitted.Add(inner);
+        // trailing part (after the annotation)
+        if (inner.End < outer.End)
+        {
+            emitted.Add(new TokenInfo { Start = inner.End, End = outer.End, Type = outer.Type });
+        }
     }
 
     /// <summary>
@@ -2446,6 +2498,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         TokenTypes.Number => 8,
         TokenTypes.String => 9,
         TokenTypes.Comment => 10,
+        TokenTypes.Annotation => 10,  // re-coloured part of a comment
         _ => 11,                    // identifier (generic reference)
     };
 
@@ -2488,8 +2541,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     {
         pluginVerilog.CodeDrawStyle.ColorType.Keyword => TokenTypes.Keyword,
         pluginVerilog.CodeDrawStyle.ColorType.Comment => TokenTypes.Comment,
-        pluginVerilog.CodeDrawStyle.ColorType.HighLightedComment => TokenTypes.Comment,
-        pluginVerilog.CodeDrawStyle.ColorType.CommentAnnotation => TokenTypes.Comment,
+        // Comment annotations (`@sync`, `@clock`, `@scope ...`) are painted
+        // INSIDE the comment with HighLightedComment / CommentAnnotation.
+        // Reporting them as "comment" made them the same colour as the
+        // surrounding comment text, i.e. invisible as annotations.
+        pluginVerilog.CodeDrawStyle.ColorType.HighLightedComment => TokenTypes.Annotation,
+        pluginVerilog.CodeDrawStyle.ColorType.CommentAnnotation => TokenTypes.Annotation,
         pluginVerilog.CodeDrawStyle.ColorType.Number => TokenTypes.Number,
         pluginVerilog.CodeDrawStyle.ColorType.Identifier => TokenTypes.Identifier,
         pluginVerilog.CodeDrawStyle.ColorType.Register => TokenTypes.Register,

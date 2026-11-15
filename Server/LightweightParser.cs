@@ -578,6 +578,14 @@ public enum TokenTypes
     Parameter = 9,
     Register = 10,
     Identifier = 11,
+    /// <summary>
+    /// A comment annotation inside a comment (<c>// @sync:clk</c>,
+    /// <c>// @clock</c>, <c>// @scope ...</c>). The editor paints the whole
+    /// comment with <c>ColorType.Comment</c> and re-paints the annotation with
+    /// <c>HighLightedComment</c> / <c>CommentAnnotation</c>, so it needs a
+    /// token type of its own to keep that second colour.
+    /// </summary>
+    Annotation = 12,
 }
 
 public sealed class TokenInfo

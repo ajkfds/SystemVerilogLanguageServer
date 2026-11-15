@@ -51,6 +51,12 @@ public sealed partial class LspHandler
         // (module / class / function names). Mapping it to Identifier made
         // every reference teal, which reads as "the colours are wrong".
         ("identifier", pluginVerilog.CodeDrawStyle.ColorType.Normal),
+        // Comment annotations inside a comment: the editor paints the whole
+        // comment with ColorType.Comment and then re-paints the annotation
+        // tokens (`@sync`, `:`, the clock name, `@clock`, `@scope ...`) with
+        // HighLightedComment / CommentAnnotation. Both of those palette entries
+        // hold the same value, so one token type covers them.
+        ("annotation", pluginVerilog.CodeDrawStyle.ColorType.CommentAnnotation),
     };
 
     /// <summary>
@@ -61,6 +67,13 @@ public sealed partial class LspHandler
     {
         "keyword", "comment", "string", "number", "macro",
         "function", "type", "variable", "property", "parameter", "register", "identifier",
+        // Comment annotations (`// @sync:clk`, `// @clock`, `// @scope ...`)
+        // are painted inside the comment with the editor's
+        // ColorType.HighLightedComment / ColorType.CommentAnnotation, which is
+        // a different colour from a plain comment. They need their own token
+        // type: mapping them onto "comment" made them indistinguishable from
+        // the surrounding comment text in VS Code.
+        "annotation",
     };
 
     /// <summary>

@@ -44,13 +44,22 @@ public sealed partial class LspHandler
         ("property", pluginVerilog.CodeDrawStyle.ColorType.Net),
         ("parameter", pluginVerilog.CodeDrawStyle.ColorType.Parameter),
         ("register", pluginVerilog.CodeDrawStyle.ColorType.Register),
-        // "identifier" is the token type used for plain references (a signal
-        // read in an expression, an instance name, ...). The editor draws
-        // those with ColorType.Normal (the default foreground), NOT with
-        // ColorType.Identifier: that teal is reserved for declarations
-        // (module / class / function names). Mapping it to Identifier made
-        // every reference teal, which reads as "the colours are wrong".
-        ("identifier", pluginVerilog.CodeDrawStyle.ColorType.Normal),
+        // "identifier" is the token type for a *declaration* name: the module
+        // name of an instantiation, the instance name, a named port label
+        // (`.clk`), a function / task name. The editor paints all of those
+        // with ColorType.Identifier (teal), so the mapping has to be
+        // Identifier - mapping it to Normal made the instance name and the
+        // port labels grey in VS Code while the editor shows them coloured.
+        //
+        // Plain *references* (a signal read in an expression) are emitted as
+        // their data-object type (property / variable / register / parameter),
+        // so they are unaffected by this rule.
+        ("identifier", pluginVerilog.CodeDrawStyle.ColorType.Identifier),
+        // "reference" is the generic fallback token the lightweight scanner
+        // emits for a word it could not classify (it has no symbol table). It
+        // must stay the default foreground, otherwise every unresolved word in
+        // a file the real parser could not handle would turn teal.
+        ("reference", pluginVerilog.CodeDrawStyle.ColorType.Normal),
         // Comment annotations inside a comment: the editor paints the whole
         // comment with ColorType.Comment and then re-paints the annotation
         // tokens (`@sync`, `:`, the clock name, `@clock`, `@scope ...`) with
@@ -67,6 +76,10 @@ public sealed partial class LspHandler
     {
         "keyword", "comment", "string", "number", "macro",
         "function", "type", "variable", "property", "parameter", "register", "identifier",
+        // Generic fallback for a word the lightweight scanner could not
+        // classify. It must stay the default foreground; see the note on the
+        // "reference" rule in TokenColorMap.
+        "reference",
         // Comment annotations (`// @sync:clk`, `// @clock`, `// @scope ...`)
         // are painted inside the comment with the editor's
         // ColorType.HighLightedComment / ColorType.CommentAnnotation, which is

@@ -160,7 +160,11 @@ public static class LightweightParser
                 default:
                     if (!IsKeywordWord(word))
                     {
-                        result.AddToken(TokenTypes.Identifier, wordStart, i);
+                        // A word this scanner could not classify is a generic
+                        // reference, not a declaration name: Identifier is the
+                        // teal "declared here" colour, Reference the default
+                        // foreground.
+                        result.AddToken(TokenTypes.Reference, wordStart, i);
                     }
                     ParseDeclarationWord(result, blockStack, word, text, wordStart, i, n, ref pendingLabel);
                     break;
@@ -196,7 +200,7 @@ public static class LightweightParser
         // remove the generic identifier tokens that exactly overlap a
         // declaration symbol so the symbol kind wins
         result.Tokens.RemoveAll(t =>
-            t.Type == TokenTypes.Identifier &&
+            t.Type == TokenTypes.Reference &&
             result.Symbols.Exists(s => s.Start == t.Start && s.End == t.End));
         return result;
     }
@@ -577,7 +581,19 @@ public enum TokenTypes
     Property = 8,   // net
     Parameter = 9,
     Register = 10,
+    /// <summary>
+    /// A declaration name (module name of an instantiation, instance name,
+    /// named port label, function / task name). The editor paints these with
+    /// <c>ColorType.Identifier</c> (teal).
+    /// </summary>
     Identifier = 11,
+    /// <summary>
+    /// Generic fallback for a word the lightweight scanner could not classify
+    /// (it has no symbol table). Deliberately a separate token type from
+    /// <see cref="Identifier"/> so it keeps the default foreground instead of
+    /// turning teal.
+    /// </summary>
+    Reference = 12,
     /// <summary>
     /// A comment annotation inside a comment (<c>// @sync:clk</c>,
     /// <c>// @clock</c>, <c>// @scope ...</c>). The editor paints the whole
@@ -585,7 +601,7 @@ public enum TokenTypes
     /// <c>HighLightedComment</c> / <c>CommentAnnotation</c>, so it needs a
     /// token type of its own to keep that second colour.
     /// </summary>
-    Annotation = 12,
+    Annotation = 13,
 }
 
 public sealed class TokenInfo

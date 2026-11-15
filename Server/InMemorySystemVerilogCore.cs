@@ -2499,7 +2499,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         TokenTypes.String => 9,
         TokenTypes.Comment => 10,
         TokenTypes.Annotation => 10,  // re-coloured part of a comment
-        _ => 11,                    // identifier (generic reference)
+        TokenTypes.Identifier => 11,  // declared name (module / instance / port label)
+        _ => 12,                    // reference (generic fallback)
     };
 
     /// <summary>
@@ -2548,12 +2549,18 @@ internal sealed class InMemoryFile : ISystemVerilogFile
         pluginVerilog.CodeDrawStyle.ColorType.HighLightedComment => TokenTypes.Annotation,
         pluginVerilog.CodeDrawStyle.ColorType.CommentAnnotation => TokenTypes.Annotation,
         pluginVerilog.CodeDrawStyle.ColorType.Number => TokenTypes.Number,
+        // ColorType.Identifier is the parser's "declared name" colour: the
+        // module name of an instantiation, the instance name, a named port
+        // label, a function / task name. It must map to the "identifier" token
+        // type (teal), which is what the editor shows.
         pluginVerilog.CodeDrawStyle.ColorType.Identifier => TokenTypes.Identifier,
         pluginVerilog.CodeDrawStyle.ColorType.Register => TokenTypes.Register,
         pluginVerilog.CodeDrawStyle.ColorType.Net => TokenTypes.Property,
         pluginVerilog.CodeDrawStyle.ColorType.Variable => TokenTypes.Variable,
         pluginVerilog.CodeDrawStyle.ColorType.Parameter => TokenTypes.Parameter,
-        _ => TokenTypes.Identifier,
+        // Anything else (Normal / Inactivated) is a plain reference: the
+        // default foreground, never teal.
+        _ => TokenTypes.Reference,
     };
 
     private List<TokenInfo>? _cachedTokens;

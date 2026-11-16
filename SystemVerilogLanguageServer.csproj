@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -33,6 +33,7 @@
 
   <ItemGroup>
     <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3" />
+    <PackageReference Include="System.Text.Json" Version="11.0.0" />
   </ItemGroup>
 
   <ItemGroup>

@@ -66,7 +66,7 @@ public sealed partial class LspHandler
         dto.Candidates.AddRange(result.Candidates);
         foreach (pluginVerilog.CoreBridge.SnippetAdapter.SnippetEntry entry in result.Snippets)
         {
-            dto.Snippets.Add(new SnippetDto
+            SnippetDto snippet = new SnippetDto
             {
                 Label = entry.Label,
                 Detail = entry.Detail,
@@ -74,7 +74,19 @@ public sealed partial class LspHandler
                 Start = entry.Start,
                 End = entry.End,
                 SnippetText = entry.SnippetText,
-            });
+                PlainText = entry.PlainText,
+            };
+            foreach (pluginVerilog.CoreBridge.SnippetField field in entry.Fields)
+            {
+                snippet.Fields.Add(new SnippetFieldDto
+                {
+                    Index = field.Index,
+                    Name = field.Name,
+                    Default = field.Default,
+                    Candidates = new List<string>(field.Candidates),
+                });
+            }
+            dto.Snippets.Add(snippet);
         }
         return dto;
     }

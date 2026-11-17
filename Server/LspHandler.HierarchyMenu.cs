@@ -81,19 +81,51 @@ public sealed partial class LspHandler
         string? instancePath = ReadString(parameters, "instancePath");
         string? fsPath = ReadString(parameters, "fsPath");
         string? relativePath = ReadString(parameters, "relativePath");
+        string? argument = ReadString(parameters, "argument");
+        string? kind = ReadString(parameters, "kind");
         pluginVerilog.Data.IVerilogRelatedFile? file = ResolveHierarchyMenuFile(parameters);
 
-        pluginVerilog.CoreBridge.HierarchyMenuAdapter.InvokeResult result =
-            pluginVerilog.CoreBridge.HierarchyMenuAdapter.Invoke(
-                id, file, label, instancePath, relativePath, fsPath);
+        // The catalog is the single source of truth for both hosts, so the entry
+        // is run through the shared adapter (the editor calls the same method).
+        pluginVerilog.CoreBridge.NavigateNodeMenuContext context =
+            new pluginVerilog.CoreBridge.NavigateNodeMenuContext
+            {
+                Kind = pluginVerilog.CoreBridge.NavigateNodeMenuContext.KindFromName(kind),
+                File = file,
+                NodeLabel = label,
+                InstancePath = instancePath,
+                WorkspaceRelativePath = relativePath,
+                FsPath = fsPath,
+                DirPath = string.IsNullOrEmpty(fsPath)
+                    ? null
+                    : System.IO.Path.GetDirectoryName(fsPath),
+            };
+
+        pluginVerilog.CoreBridge.NavigateNodeMenuAdapter.InvokeResult result =
+            pluginVerilog.CoreBridge.NavigateNodeMenuAdapter.Invoke(id, context, argument);
 
         return new HierarchyMenuInvokeResultDto
         {
             Title = result.Title,
             Text = result.Text,
-            FsPath = result.FsPath,
             ClipboardText = result.ClipboardText,
+            Prompt = result.Prompt,
+            Operation = ToOperationDto(result.Operation),
             Message = result.Message,
+        };
+    }
+
+    /// <summary>Maps the plugin's operation onto the wire DTO.</summary>
+    private static HierarchyMenuOperationDto? ToOperationDto(
+        pluginVerilog.CoreBridge.NavigateNodeMenuAdapter.ClientOperation? operation)
+    {
+        if (operation == null) return null;
+        return new HierarchyMenuOperationDto
+        {
+            Kind = operation.Kind,
+            Path = operation.Path,
+            Content = operation.Content,
+            Recursive = operation.Recursive,
         };
     }
 
@@ -195,6 +227,46 @@ public sealed class HierarchyMenuInvokeResultDto
     [System.Text.Json.Serialization.JsonPropertyName("clipboardText")]
     public string? ClipboardText { get; set; }
 
+    /// <summary>
+    /// Question the client should ask before the entry can run (a new folder /
+    /// file / module name). The client shows an input box and calls
+    /// <c>rtl/hierarchyMenuInvoke</c> again with <c>argument</c> set to the
+    /// answer, exactly like the editor's input window.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonPropertyName("prompt")]
+    public string? Prompt { get; set; }
+
+    /// <summary>
+    /// File-system work the client performs. The server decides what and where;
+    /// the client uses <c>vscode.workspace.fs</c> so remote and virtual file
+    /// systems keep working.
+    /// </summary>
+    [System.Text.Json.Serialization.JsonPropertyName("operation")]
+    public HierarchyMenuOperationDto? Operation { get; set; }
+
     [System.Text.Json.Serialization.JsonPropertyName("message")]
     public string? Message { get; set; }
+}
+
+/// <summary>
+/// A file-system operation the client performs on the server's behalf:
+/// <c>createFolder</c> / <c>createFile</c> / <c>delete</c> / <c>reveal</c>.
+/// </summary>
+public sealed class HierarchyMenuOperationDto
+{
+    /// <summary>Operation kind (see <see cref="HierarchyMenuOperationDto"/>).</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("kind")]
+    public string Kind { get; set; } = string.Empty;
+
+    /// <summary>Absolute path the operation acts on.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("path")]
+    public string? Path { get; set; }
+
+    /// <summary>Initial content for <c>createFile</c>.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("content")]
+    public string? Content { get; set; }
+
+    /// <summary>Delete directories recursively.</summary>
+    [System.Text.Json.Serialization.JsonPropertyName("recursive")]
+    public bool Recursive { get; set; }
 }

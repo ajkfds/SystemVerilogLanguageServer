@@ -21,11 +21,61 @@ internal static class Program
             return;
         }
 
-        // Prints the VS Code menu contributions the plugin's
-        // CoreBridge/HierarchyMenuCatalog defines. The extension's package.json
-        // is static, so the generated JSON is what makes a C#-defined entry
-        // appear as a native (and nestable) context-menu row. Run it after
-        // changing the catalog and paste the output into package.json.
+        // Rewrites (or verifies) the VS Code menu contributions the plugin's
+        // CoreBridge/HierarchyMenuCatalog defines.
+        //
+        // VS Code reads `contributes` once, when the extension loads, and offers
+        // no API to add a context-menu row at run time - so a C#-defined row
+        // only reaches the menu if package.json already declares it. This
+        // command is what keeps the two in step; before it existed the JSON was
+        // printed and pasted in by hand, and a forgotten paste was invisible
+        // (the server was current while the menu silently showed old rows).
+        if (args.Length > 0
+            && (args[0] == "--write-hierarchy-menu-manifest"
+                || args[0] == "--check-hierarchy-menu-manifest"))
+        {
+            bool write = args[0] == "--write-hierarchy-menu-manifest";
+            string? path = args.Length > 1 ? args[1] : null;
+            if (string.IsNullOrEmpty(path))
+            {
+                Console.Error.WriteLine(
+                    "usage: SystemVerilogLanguageServer " +
+                    (write ? "--write-hierarchy-menu-manifest" : "--check-hierarchy-menu-manifest") +
+                    " <path to package.json>");
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            pluginVerilog.CoreBridge.PackageJsonWriteResult result =
+                pluginVerilog.CoreBridge.HierarchyMenuManifest.WriteToPackageJson(path, write);
+
+            if (result.Failed)
+            {
+                Console.Error.WriteLine("[ERROR] " + result.Message);
+                Environment.ExitCode = 1;
+                return;
+            }
+            if (!result.Changed)
+            {
+                Console.Out.WriteLine("[ok] " + result.Message);
+                return;
+            }
+
+            if (write)
+            {
+                Console.Out.WriteLine("[ok] " + result.Message);
+                Console.Out.WriteLine(
+                    "     Reload the VS Code window (or rebuild the .vsix) to pick it up.");
+                return;
+            }
+
+            Console.Error.WriteLine("[ERROR] " + result.Message);
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        // Prints the manifest as standalone JSON (diagnostics only; the
+        // committed package.json is written by --write-hierarchy-menu-manifest).
         if (args.Length > 0 && args[0] == "--hierarchy-menu-manifest")
         {
             Console.Out.Write(pluginVerilog.CoreBridge.HierarchyMenuManifest.ToJson());

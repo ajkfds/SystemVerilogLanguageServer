@@ -325,8 +325,15 @@ internal sealed class InMemoryProject : ISystemVerilogProject
 
         CodeEditor2.Data.Folder parent = EnsurePluginFolder(directory);
 
+        // Ask the project which file type the path is, instead of guessing from
+        // the extension: `Project.GetFileType` also applies the project's
+        // `.fileClassify` overrides, which is how a workspace declares that
+        // "*.inc is a Verilog header". Guessing here made the LSP host ignore
+        // that file entirely while the editor honoured it.
         CodeEditor2.Data.TextFile item;
-        if (name.EndsWith(".svh", StringComparison.OrdinalIgnoreCase)
+        string? fileTypeId = PluginProject.GetFileType(relativePath)?.ID;
+        if (string.Equals(fileTypeId, pluginVerilog.FileTypes.VerilogHeaderFile.TypeID, StringComparison.Ordinal)
+            || name.EndsWith(".svh", StringComparison.OrdinalIgnoreCase)
             || name.EndsWith(".vh", StringComparison.OrdinalIgnoreCase))
         {
             item = new pluginVerilog.Data.VerilogHeaderFile

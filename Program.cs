@@ -58,20 +58,51 @@ internal static class Program
             if (!result.Changed)
             {
                 Console.Out.WriteLine("[ok] " + result.Message);
-                return;
             }
-
-            if (write)
+            else if (write)
             {
                 Console.Out.WriteLine("[ok] " + result.Message);
-                Console.Out.WriteLine(
-                    "     Reload the VS Code window (or rebuild the .vsix) to pick it up.");
+            }
+            else
+            {
+                Console.Error.WriteLine("[ERROR] " + result.Message);
+                Environment.ExitCode = 1;
+            }
+
+            // The tree icons carry the error / warning / dirty overlays as
+            // separate SVG assets (VS Code cannot draw an overlay on an icon),
+            // so a new base icon or a changed badge geometry needs them
+            // regenerated. Doing it here keeps "everything the extension takes
+            // from C#" in one command.
+            string iconsDirectory = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, "icons");
+            pluginVerilog.CoreBridge.BadgeIconResult icons =
+                pluginVerilog.CoreBridge.BadgeIconGenerator.Generate(iconsDirectory, write);
+
+            if (icons.Failed)
+            {
+                Console.Error.WriteLine("[ERROR] " + icons.Message);
+                Environment.ExitCode = 1;
                 return;
             }
 
-            Console.Error.WriteLine("[ERROR] " + result.Message);
-            Environment.ExitCode = 1;
-            return;
+            Console.Out.WriteLine((icons.Changed.Count == 0 ? "[ok] " : "[ok] ") + icons.Message);
+            foreach (string skipped in icons.Skipped)
+            {
+                Console.Out.WriteLine("     no base icon: " + skipped);
+            }
+
+            if (write && (result.Changed || icons.Changed.Count > 0))
+            {
+                Console.Out.WriteLine(
+                    "     Reload the VS Code window (or rebuild the .vsix) to pick it up.");
+            }
+            if (!write && icons.Changed.Count > 0)
+            {
+                Console.Error.WriteLine(
+                    "[ERROR] " + icons.Changed.Count + " badge icon(s) out of date " +
+                    "(run with --write-hierarchy-menu-manifest)");
+                Environment.ExitCode = 1;
+            }
         }
 
         // Prints the manifest as standalone JSON (diagnostics only; the

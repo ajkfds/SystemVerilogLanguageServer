@@ -60,6 +60,7 @@ public sealed partial class LspHandler
                 Enabled = entry.Enabled,
                 Reason = entry.Reason,
                 Group = entry.Group,
+                Icon = entry.VsCodeIcon,
             });
         }
         return dto;
@@ -207,6 +208,19 @@ public sealed class HierarchyMenuEntryDto
     /// <summary>Ordering group.</summary>
     [System.Text.Json.Serialization.JsonPropertyName("group")]
     public int Group { get; set; }
+
+    /// <summary>
+    /// Icon the client can draw: an icon name under the extension's
+    /// <c>icons/</c> folder, or a <c>$(...)</c> codicon. Null when the row has
+    /// none.
+    /// </summary>
+    /// <remarks>
+    /// Only the QuickPick fallback can use it - the native
+    /// <c>view/item/context</c> menu has no icon property, so VS Code draws
+    /// those rows as text only.
+    /// </remarks>
+    [System.Text.Json.Serialization.JsonPropertyName("icon")]
+    public string? Icon { get; set; }
 }
 
 /// <summary>Result of <c>rtl/hierarchyMenuInvoke</c>.</summary>

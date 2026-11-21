@@ -50,6 +50,13 @@ public sealed partial class LspHandler
     public LspHandler(InMemorySystemVerilogCore core)
     {
         _core = core;
+        // Forward data-layer change notifications (Item.PresentationChanged)
+        // to the client as rtl/hierarchyInvalidated. This is the language
+        // server's counterpart of the editor's NavigatePanelNode repaint: the
+        // data layer only says "this item changed", and each host decides how
+        // to surface it. Without this, a background parse would leave the
+        // VS Code tree stale until the user pressed refresh.
+        _core.PresentationChangedNotification = reason => PushHierarchyInvalidated(reason);
         RegisterDefaultHandlers();
     }
 

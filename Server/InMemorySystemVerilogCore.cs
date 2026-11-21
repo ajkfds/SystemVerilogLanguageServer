@@ -27,14 +27,28 @@ public sealed class InMemorySystemVerilogCore : ISystemVerilogCore
 {
     private readonly ConcurrentDictionary<string, InMemoryProject> _projects = new();
 
+    /// <summary>
+    /// Set by the LSP host so a data-layer change can be pushed to the client
+    /// (as <c>rtl/hierarchyInvalidated</c>). Null in tests / headless runs,
+    /// where the callback is simply not invoked.
+    ///
+    /// <para>
+    /// Lives on the core rather than on a project because the host owns one
+    /// handler for the whole session, while items live in per-project trees.
+    /// Each <see cref="InMemoryProject"/> forwards its items' notifications
+    /// here.
+    /// </para>
+    /// </summary>
+    internal Action<string>? PresentationChangedNotification { get; set; }
+
     public Task<ISystemVerilogProject> GetProjectAsync(string projectId, CancellationToken cancellationToken = default)
     {
-        InMemoryProject project = _projects.GetOrAdd(projectId, id => new InMemoryProject(id));
+        InMemoryProject project = _projects.GetOrAdd(projectId, id => new InMemoryProject(id, this));
         return Task.FromResult<ISystemVerilogProject>(project);
     }
 
     internal InMemoryProject GetOrCreateProject(string projectId) =>
-        _projects.GetOrAdd(projectId, id => new InMemoryProject(id));
+        _projects.GetOrAdd(projectId, id => new InMemoryProject(id, this));
 
     /// <summary>
     /// Test-only entry point that exposes the same per-project handle the
@@ -126,9 +140,19 @@ internal sealed class InMemoryProject : ISystemVerilogProject
         PluginProject.RootPath = rootPath;
     }
 
-    public InMemoryProject(string id)
+    /// <summary>
+    /// The core that owns this project, used to forward data-layer change
+    /// notifications to the LSP host. Null when a project is built standalone
+    /// (tests), in which case notifications are simply dropped.
+    /// </summary>
+    private readonly InMemorySystemVerilogCore? _owner;
+
+    public InMemoryProject(string id) : this(id, null) { }
+
+    public InMemoryProject(string id, InMemorySystemVerilogCore? owner)
     {
         Id = id;
+        _owner = owner;
 
         // register the plugin file types once (UI-free) so that
         // pluginVerilog.Plugin.StaticID / ProjectProperty are available
@@ -290,6 +314,50 @@ internal sealed class InMemoryProject : ISystemVerilogProject
     }
 
     /// <summary>
+    /// Subscribes <paramref name="item"/> to the data layer's change
+    /// notification and forwards it to the client as
+    /// <c>rtl/hierarchyInvalidated</c>.
+    ///
+    /// <para>
+    /// This is the language-server counterpart of the editor's
+    /// <c>NavigatePanelNode</c> subscription. The data layer
+    /// (<see cref="CodeEditor2.Data.Item.PresentationChanged"/>) only announces
+    /// "this item changed"; the editor repaints its UI node on the UI thread,
+    /// while the server has no UI thread and instead tells the client to
+    /// re-fetch the tree. Subscribing here is what keeps the VS Code tree in
+    /// sync after a background parse, exactly like the editor's icon refresh.
+    /// </para>
+    ///
+    /// <para>
+    /// Subscribed once per item, when the item is first created (see
+    /// <see cref="GetOrCreatePluginItem"/>), so no duplicate handlers pile up.
+    /// </para>
+    /// </summary>
+    private void SubscribePluginItemNotifications(CodeEditor2.Data.Item item)
+    {
+        item.PresentationChanged += OnPluginItemPresentationChanged;
+    }
+
+    /// <summary>
+    /// Raises <c>rtl/hierarchyInvalidated</c> when a plugin item's parse result
+    /// changed. The handler must not throw: it runs inside the parser's
+    /// completion path, where an exception would abort the whole parse.
+    /// </summary>
+    private void OnPluginItemPresentationChanged(CodeEditor2.Data.Item item)
+    {
+        try
+        {
+            // The owner holds the host callback (one handler per LSP session);
+            // a standalone project (tests) has no owner and drops the event.
+            _owner?.PresentationChangedNotification?.Invoke("presentationChanged");
+        }
+        catch
+        {
+            // never let a notification failure break parsing
+        }
+    }
+
+    /// <summary>
     /// Re-registers every known file after the workspace roots changed (a root
     /// inferred from an opened file, or a folder added to the workspace). The
     /// relative path of a file depends on the root, so entries registered
@@ -363,6 +431,11 @@ internal sealed class InMemoryProject : ISystemVerilogProject
 
         parent.Items.AddOrUpdate(name, item);
         _pluginItems[relativePath] = item;
+        // Forward this item's data-layer changes to the client as
+        // rtl/hierarchyInvalidated (the LSP counterpart of the editor's
+        // NavigatePanelNode subscription). Subscribed once, at creation, so
+        // handlers never accumulate.
+        SubscribePluginItemNotifications(item);
         return item;
     }
 

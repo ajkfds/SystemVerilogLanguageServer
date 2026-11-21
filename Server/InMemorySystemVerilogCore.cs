@@ -10,11 +10,18 @@ using SystemVerilogCore.Documents;
 namespace SystemVerilogLanguageServer.Server;
 
 /// <summary>
-/// Reference implementation of <see cref="ISystemVerilogCore"/> that holds
-/// the open files in memory. This is the minimum the LSP needs to start
-/// talking to the core: it is the seam that
-/// <c>CodeEditor2VerilogPlugin.SystemVerilogCoreAdapter</c> will replace
-/// with a real, parser-backed implementation in a later phase.
+/// Parser-backed implementation of <see cref="ISystemVerilogCore"/> for the
+/// VS Code language server. The open files are held in memory and parsed by
+/// the real plugin parser through <c>CoreBridge.ParseEngine</c>; every query
+/// (symbols, diagnostics, colours, hierarchy, snippets, ...) is answered from
+/// that parse result.
+///
+/// <para>
+/// This class is the <b>only</b> <see cref="ISystemVerilogCore"/>
+/// implementation. The desktop editor does not use it: it drives the plugin
+/// types (<c>pluginVerilog.Data.*</c>) directly, so the plugin has no
+/// dependency on this assembly or on <c>SystemVerilogCore</c>.
+/// </para>
 /// </summary>
 public sealed class InMemorySystemVerilogCore : ISystemVerilogCore
 {
@@ -1495,9 +1502,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     /// instantiation at <paramref name="index"/> (one row per port with the
     /// signal the editor would connect). The decision of <b>which signal
     /// matches a port</b> lives in the plugin's UI-free
-    /// <c>CoreBridge.AutoConnectAdapter</c>; the host only renders the rows.
+    /// <see cref="pluginVerilog.CoreBridge.AutoConnectAdapter"/>; the host only
+    /// renders the rows.
     /// </summary>
-    internal SystemVerilogCore.AutoConnect.AutoConnectModel? GetAutoConnectModel(int index)
+    internal pluginVerilog.CoreBridge.AutoConnectModel? GetAutoConnectModel(int index)
     {
         EnsureBuilt();
         if (_parsedDocument == null) return null;

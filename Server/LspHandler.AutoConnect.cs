@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
-using SystemVerilogCore.AutoConnect;
+using pluginVerilog.CoreBridge;
 using SystemVerilogCore.Documents;
 
 namespace SystemVerilogLanguageServer.Server;
@@ -31,7 +31,7 @@ namespace SystemVerilogLanguageServer.Server;
 /// <para>
 /// Both are non-standard requests (vendor prefix <c>rtl/</c>). The decision of
 /// <b>which signal matches a port</b> stays in the plugin's UI-free
-/// <c>CoreBridge.AutoConnectAdapter</c>, so the desktop editor and the LSP host
+/// <see cref="AutoConnectAdapter"/>, so the desktop editor and the LSP host
 /// share one implementation.
 /// </para>
 /// </summary>

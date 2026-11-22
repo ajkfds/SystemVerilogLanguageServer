@@ -1259,9 +1259,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             // cosmetic, so never fail the listing over it
         }
         if (instanced?.NameReference != null
-            && instanced.File is CodeEditor2.Data.TextFile instancedFile)
+            && instanced.File is CodeEditor2.Data.TextFile instancedFile
+            // The parser contract already exposes Length / GetLineAt /
+            // GetLineStartIndex, so the position can be resolved without the
+            // editor's concrete CodeDocument.
+            && instancedFile.CodeDocument is SystemVerilogCore.Documents.IVerilogTextDocument instancedDocument)
         {
-            CodeEditor2.CodeEditor.CodeDocument? instancedDocument = instancedFile.CodeDocument;
             node.StartLine = GetLineOfIndex(instancedDocument, instanced.NameReference.Index);
             node.StartCharacter = GetCharacterOfIndex(instancedDocument, instanced.NameReference.Index);
         }
@@ -1550,17 +1553,26 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// node one line below its declaration.
     /// </para>
     /// </summary>
-    private static int? GetLineOfIndex(CodeEditor2.CodeEditor.CodeDocument? doc, int index)
+    /// <summary>
+    /// Zero-based line containing <paramref name="index"/>.
+    ///
+    /// <para>
+    /// Resolved through <see cref="SystemVerilogCore.Documents.IVerilogTextDocument"/>
+    /// so this does not depend on the editor's concrete CodeDocument. That
+    /// contract's <c>GetLineAt</c> is 0-based (the editor's own is 1-based via
+    /// AvaloniaEdit's LineNumber), which is why the conversion lives in the
+    /// implementation rather than here.
+    /// </para>
+    /// </summary>
+    private static int? GetLineOfIndex(SystemVerilogCore.Documents.IVerilogTextDocument? doc, int index)
     {
         if (doc == null || index < 0 || index > doc.Length) return null;
-        return doc.GetLineAt(index) - 1;
+        return doc.GetLineAt(index);
     }
 
-    private static int? GetCharacterOfIndex(CodeEditor2.CodeEditor.CodeDocument? doc, int index)
+    private static int? GetCharacterOfIndex(SystemVerilogCore.Documents.IVerilogTextDocument? doc, int index)
     {
         if (doc == null || index < 0 || index > doc.Length) return null;
-        // GetLineAt is 1-based (AvaloniaEdit LineNumber) and GetLineStartIndex
-        // takes that same 1-based number, so the subtraction is consistent.
         int line = doc.GetLineAt(index);
         return index - doc.GetLineStartIndex(line);
     }

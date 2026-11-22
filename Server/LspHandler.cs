@@ -281,22 +281,23 @@ public sealed partial class LspHandler
         if (_workspaceLoaded) return;
         _workspaceLoaded = true;
 
-        InMemoryProject project = _core.GetOrCreateProject("default");
+        // One project per workspace folder: this is the language-server
+        // equivalent of the editor's per-project Global.Projects, and it is what
+        // makes `// @project <folder name>` work across a multi-root workspace.
         foreach (string root in _workspaceRoots)
         {
+            InMemoryProject project = _core.GetOrCreateProject(ProjectNameForRoot(root));
             if (!project.WorkspaceRoots.Contains(root)) project.WorkspaceRoots.Add(root);
+            // The plugin project resolves relative paths against RootPath, which
+            // it could not know when it was created (before initialize). Without
+            // this the hierarchy file operations and the node menu's simulation
+            // setup produced paths under the placeholder temp directory.
+            project.SetPluginRootPath(root);
+            // The plugin item tree is keyed by the workspace-relative path, so
+            // it can only be built once the root is known. `include resolution
+            // goes through that tree (WordScanner.parseInclude).
+            project.RebuildPluginItemTree();
         }
-        // The plugin project resolves relative paths against RootPath, which it
-        // could not know when it was created (before initialize). Without this
-        // the hierarchy file operations and the node menu's simulation setup
-        // produced paths under the placeholder temp directory.
-        if (project.WorkspaceRoots.Count > 0) project.SetPluginRootPath(project.WorkspaceRoots[0]);
-
-        // The plugin item tree is keyed by the workspace-relative path, so it
-        // can only be built once the roots are known. `include resolution goes
-        // through that tree (WordScanner.parseInclude), so without it every
-        // include reports "file not found" in the LSP host.
-        project.RebuildPluginItemTree();
 
         // initialize must answer immediately: reading and parsing every source
         // file of a large workspace (this repository has >1000 .sv files under
@@ -313,7 +314,13 @@ public sealed partial class LspHandler
         // A large workspace (thousands of sources) is parsed in the background
         // instead: blocking initialize for minutes is what left the hierarchy
         // view empty, and each file is parsed lazily on expansion anyway.
-        List<InMemoryFile> added = ScanWorkspaceFiles(project, CancellationToken.None);
+        // Scan every project (one per workspace root). A file belongs to the
+        // project whose root contains it, so the scan has to run per root.
+        List<InMemoryFile> added = new();
+        foreach (InMemoryProject project in _core.Projects)
+        {
+            added.AddRange(ScanWorkspaceFiles(project, CancellationToken.None));
+        }
         if (added.Count <= MaxEagerParseFiles)
         {
             ParseFiles(added, CancellationToken.None);
@@ -1503,7 +1510,49 @@ public sealed partial class LspHandler
     /// </summary>
     private List<HierarchyNode> BuildWorkspaceNodes(InMemoryProject project)
     {
-        return BuildFolderNodes(project, string.Empty);
+        // The whole workspace is the union of every project's roots: each
+        // workspace folder is its own project now, so the top level has to be
+        // assembled across them (a single root per project would otherwise
+        // always look like "one root" and list its children directly).
+        List<string> roots = new();
+        foreach (InMemoryProject p in _core.Projects)
+        {
+            foreach (string root in p.WorkspaceRoots)
+            {
+                if (!roots.Contains(root)) roots.Add(root);
+            }
+        }
+        if (roots.Count == 0) return new List<HierarchyNode>();
+        if (roots.Count == 1)
+        {
+            InMemoryProject owner = _core.FindProjectForPath(roots[0]) ?? project;
+            return BuildDirectoryNodes(owner, roots[0], string.Empty);
+        }
+
+        List<HierarchyNode> nodes = new();
+        foreach (string root in roots)
+        {
+            string trimmed = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            nodes.Add(new HierarchyNode
+            {
+                Label = Path.GetFileName(trimmed),
+                Kind = HierarchyNodeKind.Folder,
+                FolderPath = root,
+                HasChildren = true,
+                // A workspace root is the equivalent of the editor's ProjectNode
+                // ("home" icon), while ordinary directories use the FolderNode
+                // icon. Both ship in the extension's icons/.
+                Icon = "project",
+                ContextValue = "rtlFolder",
+                Collapsible = "collapsed",
+                Tooltip = root,
+                FsPath = root,
+                DirPath = root,
+                ExpandToken = ExpandToken.ForFolder(root),
+            });
+        }
+        nodes.Sort((a, b) => string.Compare(a.Label, b.Label, StringComparison.OrdinalIgnoreCase));
+        return nodes;
     }
 
     /// <summary>
@@ -1993,7 +2042,43 @@ public sealed partial class LspHandler
         return true;
     }
 
-    private InMemoryProject GetOrCreateProjectForUri(string uri) => _core.GetOrCreateProject("default");
+    /// <summary>
+    /// Returns the project that owns <paramref name="uri"/>.
+    ///
+    /// <para>
+    /// Each workspace folder is its own project, so a file is attributed to the
+    /// project whose root contains it. Falls back to the first workspace root
+    /// (or a default project when no root is known yet) so a request for an
+    /// untitled buffer still resolves.
+    /// </para>
+    /// </summary>
+    private InMemoryProject GetOrCreateProjectForUri(string uri)
+    {
+        string? absolutePath = UriToAbsolutePath(uri);
+        InMemoryProject? owner = _core.FindProjectForPath(absolutePath);
+        if (owner != null) return owner;
+
+        // Unknown file (untitled buffer / opened before a root was known):
+        // attach it to the first root's project so its parse result is still
+        // visible, matching the previous single-project behaviour.
+        if (_workspaceRoots.Count > 0)
+        {
+            string rootName = ProjectNameForRoot(_workspaceRoots[0]);
+            return _core.GetOrCreateProject(rootName);
+        }
+        return _core.GetOrCreateProject("default");
+    }
+
+    /// <summary>
+    /// Project name for a workspace root: its last path segment, which is what
+    /// a <c>// @project &lt;name&gt;</c> annotation refers to.
+    /// </summary>
+    private static string ProjectNameForRoot(string root)
+    {
+        string trimmed = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string name = Path.GetFileName(trimmed);
+        return string.IsNullOrEmpty(name) ? trimmed : name;
+    }
 
     private static Location ToLocation(ISystemVerilogFile file, SystemVerilogRange range)
     {

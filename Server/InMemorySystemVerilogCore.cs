@@ -47,8 +47,72 @@ public sealed class InMemorySystemVerilogCore : ISystemVerilogCore
         return Task.FromResult<ISystemVerilogProject>(project);
     }
 
-    internal InMemoryProject GetOrCreateProject(string projectId) =>
-        _projects.GetOrAdd(projectId, id => new InMemoryProject(id, this));
+    /// <summary>
+    /// Returns the project that owns <paramref name="absolutePath"/>, or null
+    /// when the path is not under any registered workspace root.
+    ///
+    /// <para>
+    /// Each workspace folder is its own project (the language-server equivalent
+    /// of the editor's per-project <c>Global.Projects</c>), so a file's project
+    /// is decided by which root it lives under. The longest matching root wins,
+    /// so a nested folder is attributed to the more specific project.
+    /// </para>
+    /// </summary>
+    internal InMemoryProject? FindProjectForPath(string? absolutePath)
+    {
+        if (string.IsNullOrEmpty(absolutePath)) return null;
+
+        InMemoryProject? best = null;
+        int bestLength = -1;
+        foreach (InMemoryProject project in _projects.Values)
+        {
+            foreach (string root in project.WorkspaceRoots)
+            {
+                string normalizedRoot = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                if (normalizedRoot.Length <= bestLength) continue;
+                string prefix = normalizedRoot + Path.DirectorySeparatorChar;
+                if (absolutePath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    best = project;
+                    bestLength = normalizedRoot.Length;
+                }
+            }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// Resolves a project by name for <c>// @project &lt;name&gt;</c>
+    /// references. The name is the workspace folder's name (its last path
+    /// segment), which is what a user writes in the annotation.
+    /// </summary>
+    internal InMemoryProject? FindProjectByName(string? name)
+    {
+        if (string.IsNullOrEmpty(name)) return null;
+        foreach (InMemoryProject project in _projects.Values)
+        {
+            if (string.Equals(project.Name, name, StringComparison.OrdinalIgnoreCase)) return project;
+        }
+        return null;
+    }
+
+    internal InMemoryProject GetOrCreateProject(string projectId)
+    {
+        // Projects are keyed by workspace folder name now, but existing callers
+        // (and the test suite) still ask for the historical single project id
+        // "default". Resolve that to the one project when there is exactly one,
+        // instead of creating a second, empty project next to it.
+        if (string.Equals(projectId, "default", StringComparison.Ordinal)
+            && _projects.Count == 1)
+        {
+            foreach (InMemoryProject only in _projects.Values) return only;
+        }
+        return _projects.GetOrAdd(projectId, id => new InMemoryProject(id, this));
+    }
+
+    /// <summary>All projects (one per workspace folder).</summary>
+    internal IReadOnlyCollection<InMemoryProject> Projects =>
+        (IReadOnlyCollection<InMemoryProject>)_projects.Values;
 
     /// <summary>
     /// Test-only entry point that exposes the same per-project handle the
@@ -76,9 +140,81 @@ internal sealed class ParserProjectStub : CodeEditor2.Data.Project
     public ParserProjectStub() : base("lsp", System.IO.Path.GetTempPath(), "") { }
 }
 
-internal sealed class InMemoryProject : ISystemVerilogProject
+internal sealed class InMemoryProject : ISystemVerilogProject,
+    SystemVerilogCore.Projects.IVerilogProject
 {
     private readonly ConcurrentDictionary<string, InMemoryFile> _files = new();
+
+    /// <summary>
+    /// Snapshot of the registered files, used by the item-tree adapter.
+    /// </summary>
+    internal IReadOnlyCollection<InMemoryFile> FilesInternal =>
+        (IReadOnlyCollection<InMemoryFile>)_files.Values;
+
+    /// <summary>
+    /// Project name: the workspace folder's name (its last path segment).
+    ///
+    /// <para>
+    /// This is the name a user writes in <c>// @project &lt;name&gt;</c>, so a
+    /// multi-root workspace can reference modules across folders the same way
+    /// the editor does. Falls back to the id when no root is known yet.
+    /// </para>
+    /// </summary>
+    internal string Name
+    {
+        get
+        {
+            if (WorkspaceRoots.Count == 0) return Id;
+            string root = WorkspaceRoots[0]
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string name = Path.GetFileName(root);
+            return string.IsNullOrEmpty(name) ? Id : name;
+        }
+    }
+
+    // ---- SystemVerilogCore.Projects.IVerilogProject -------------------
+
+    string SystemVerilogCore.Projects.IVerilogProject.Name => Name;
+
+    /// <summary>
+    /// This project's parser settings, i.e. the "Verilog" project property of
+    /// the shared plugin project. Each workspace folder has its own, which is
+    /// the language-server equivalent of per-project settings in the editor.
+    /// </summary>
+    SystemVerilogCore.Projects.IVerilogProjectSettings?
+        SystemVerilogCore.Projects.IVerilogProject.Settings
+    {
+        get
+        {
+            // Resolved by capability rather than by plugin id: this assembly
+            // must not assume which plugin owns the settings.
+            foreach (CodeEditor2.Data.ProjectProperty property in PluginProject.ProjectProperties.Values)
+            {
+                if (property is SystemVerilogCore.Projects.IVerilogProjectSettings settings)
+                {
+                    return settings;
+                }
+            }
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Resolves another workspace folder by name, for
+    /// <c>// @project &lt;name&gt;</c>.
+    /// </summary>
+    SystemVerilogCore.Projects.IVerilogProject?
+        SystemVerilogCore.Projects.IVerilogProject.ResolveProject(string name) =>
+            _owner?.FindProjectByName(name);
+
+    /// <summary>
+    /// The root of this project's item tree.
+    /// </summary>
+    SystemVerilogCore.Projects.IVerilogItemTree
+        SystemVerilogCore.Projects.IVerilogProject.Items =>
+            itemTree ??= new InMemoryItemTree(this);
+
+    private InMemoryItemTree? itemTree;
 
     /// <summary>
     /// The single plugin-side <see cref="CodeEditor2.Data.Project"/> shared by
@@ -630,8 +766,19 @@ internal sealed class InMemoryProject : ISystemVerilogProject
     }
 }
 
-internal sealed class InMemoryFile : ISystemVerilogFile
+internal sealed class InMemoryFile : ISystemVerilogFile,
+    SystemVerilogCore.Projects.IVerilogItem
 {
+    // ---- SystemVerilogCore.Projects.IVerilogItem ---------------------
+    // The parser-facing view of a tree item. AbsolutePath is the identity the
+    // language server has; the relative path is derived from the project root.
+
+    string SystemVerilogCore.Projects.IVerilogItem.Name =>
+        System.IO.Path.GetFileName(AbsolutePath ?? Id) ?? Id;
+
+    string SystemVerilogCore.Projects.IVerilogItem.RelativePath =>
+        ProjectOwner?.GetProjectRelativePath(AbsolutePath) ?? Id;
+
     private InMemoryDocument? _document;
     private readonly List<InMemoryElement> _allElements = new();
     private readonly Dictionary<string, List<InMemoryElement>> _byName = new();
@@ -3043,6 +3190,67 @@ internal sealed class InMemoryDocument : ISystemVerilogDocument
 
     public ISystemVerilogNamedElement? FindElementAt(int index) =>
         ((InMemoryFile)File).FindElementAt(index);
+}
+
+/// <summary>
+/// Adapts an <see cref="InMemoryProject"/>'s item table to the parser-facing
+/// <see cref="SystemVerilogCore.Projects.IVerilogItemTree"/> surface.
+///
+/// <para>
+/// The parser resolves <c>`include</c> targets by asking two questions: "is
+/// there a file at this project-relative path" and "is there a file with this
+/// name anywhere". Both are answered over the project's own file table, so the
+/// language server no longer has to fake an editor item tree.
+/// </para>
+/// </summary>
+internal sealed class InMemoryItemTree : SystemVerilogCore.Projects.IVerilogItemTree
+{
+    private readonly InMemoryProject project;
+
+    public InMemoryItemTree(InMemoryProject project)
+    {
+        this.project = project;
+    }
+
+    /// <summary>
+    /// Returns the file at <paramref name="relativePath"/>, or null. Paths are
+    /// compared '/'-normalised and case-insensitively.
+    /// </summary>
+    public SystemVerilogCore.Projects.IVerilogItem? FindByRelativePath(string relativePath)
+    {
+        if (string.IsNullOrEmpty(relativePath)) return null;
+        string target = Normalize(relativePath);
+        foreach (InMemoryFile file in project.FilesInternal)
+        {
+            if (Normalize(project.GetProjectRelativePath(file.AbsolutePath)) == target) return file;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Returns a file whose name matches <paramref name="fileName"/>, or null.
+    /// Any directory prefix is stripped first, because the caller may pass
+    /// "include_directory/defs.sv" while the table is keyed by "defs.sv".
+    /// </summary>
+    public SystemVerilogCore.Projects.IVerilogItem? FindByName(string fileName)
+    {
+        if (string.IsNullOrEmpty(fileName)) return null;
+        string name = fileName;
+        int slash = name.LastIndexOf('/');
+        if (slash >= 0) name = name.Substring(slash + 1);
+
+        foreach (InMemoryFile file in project.FilesInternal)
+        {
+            string? relativePath = project.GetProjectRelativePath(file.AbsolutePath);
+            string candidate = relativePath == null ? "" : Normalize(relativePath);
+            int candidateSlash = candidate.LastIndexOf('/');
+            string candidateName = candidateSlash >= 0 ? candidate.Substring(candidateSlash + 1) : candidate;
+            if (string.Equals(candidateName, name, StringComparison.OrdinalIgnoreCase)) return file;
+        }
+        return null;
+    }
+
+    private static string Normalize(string? path) => (path ?? "").Replace('\\', '/');
 }
 
 internal sealed class RootBlock : ISystemVerilogBuildingBlock

@@ -1658,11 +1658,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile
     {
         List<ISystemVerilogDiagnostic> result = new();
         CodeEditor2.CodeEditor.CodeDocument? doc = parsedDoc.CodeDocument;
-        foreach (CodeEditor2.CodeEditor.ParsedDocument.Message message in parsedDoc.Messages)
+        // Messages are the parser's own type now (they used to be the editor's
+        // base-class Message, which forced a downcast here).
+        foreach (pluginVerilog.Verilog.ParsedDocument.Message message in parsedDoc.Messages)
         {
-            pluginVerilog.Verilog.ParsedDocument.Message? verilogMessage =
-                message as pluginVerilog.Verilog.ParsedDocument.Message;
-            SystemVerilogSeverity severity = verilogMessage?.Type switch
+            SystemVerilogSeverity severity = message.Type switch
             {
                 pluginVerilog.Verilog.ParsedDocument.Message.MessageType.Error => SystemVerilogSeverity.Error,
                 pluginVerilog.Verilog.ParsedDocument.Message.MessageType.Warning => SystemVerilogSeverity.Warning,

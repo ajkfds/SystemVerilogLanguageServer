@@ -1287,13 +1287,19 @@ public sealed partial class LspHandler
         ISystemVerilogNamedElement? def = project.FindDefinition(file, index);
         if (def == null) return null;
 
-        // HoverContent.Build defers to a custom IHoverContentProvider when
-        // one has been installed process-wide. The plugin registers a
-        // richer provider that adds data type, bit width, port direction
-        // and port list. The default fallback (no provider) still emits a
-        // useful markdown block.
+        // HoverContent.Build produces the generic signature + definition
+        // path. The parser-side detail (data type, bit width, port direction /
+        // list, argument list) is carried on the in-memory element and is
+        // appended here, so the language server shows what the editor's
+        // mouse-over hint shows.
         string? content = HoverContent.Build(def);
         if (content == null) return null;
+
+        if (def is InMemoryElement inMemoryElement
+            && !string.IsNullOrEmpty(inMemoryElement.Detail))
+        {
+            content += "\n\n" + inMemoryElement.Detail;
+        }
 
         return new Hover
         {

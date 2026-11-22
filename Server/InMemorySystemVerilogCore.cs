@@ -2227,7 +2227,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             if (nameStart >= 0)
             {
                 var declElement = new InMemoryElement(bb.Name, MapNamedElementType(bb),
-                    new SystemVerilogRange(nameStart, bb.Name.Length), this, parent);
+                    new SystemVerilogRange(nameStart, bb.Name.Length), this, parent)
+                {
+                    Detail = BuildElementDetail(bb),
+                };
                 block.SelfElement = declElement;
                 RegisterElement(declElement);
             }
@@ -2247,7 +2250,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
                 int start = FindNameStart(text, element.Name);
                 if (start < 0) continue;
                 var memberElement = new InMemoryElement(element.Name, MapNamedElementType(element),
-                    new SystemVerilogRange(start, element.Name.Length), this, block);
+                    new SystemVerilogRange(start, element.Name.Length), this, block)
+                {
+                    Detail = BuildElementDetail(element),
+                };
                 RegisterElement(memberElement);
                 block.AddMember(memberElement);
             }
@@ -2267,6 +2273,124 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // collect references (use / assign sites) reported by the real parser
         AppendReferences(parsedDoc.Root, new HashSet<pluginVerilog.Verilog.DataObjects.DataObject>());
+    }
+
+    /// <summary>
+    /// Builds the hover detail lines for a parser element: its data type, bit
+    /// width, port direction / port list, function / task signature, ...
+    ///
+    /// <para>
+    /// The editor's mouse-over hint shows this (it renders the element's
+    /// <c>AppendLabel</c>); the language server has to state it as text. Only
+    /// information the parser actually has is reported - anything that cannot
+    /// be resolved is skipped rather than guessed.
+    /// </para>
+    /// </summary>
+    private static string? BuildElementDetail(pluginVerilog.Verilog.INamedElement element)
+    {
+        try
+        {
+            List<string> lines = new();
+
+            if (element is pluginVerilog.Verilog.DataObjects.Port port)
+            {
+                string direction = port.Direction switch
+                {
+                    pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Input => "input",
+                    pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Output => "output",
+                    pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Inout => "inout",
+                    pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Ref => "ref",
+                    _ => "",
+                };
+                if (direction.Length > 0) lines.Add("direction: " + direction);
+            }
+
+            if (element is pluginVerilog.Verilog.DataObjects.DataObject dataObject)
+            {
+                string? typeName = DescribeDataType(dataObject.DataType);
+                if (typeName != null) lines.Add("type: " + typeName);
+
+                int? bitWidth = dataObject.BitWidth;
+                if (bitWidth != null) lines.Add("bit width: " + bitWidth.Value);
+            }
+
+            if (element is pluginVerilog.Verilog.Function function)
+            {
+                List<string> ports = new();
+                foreach (pluginVerilog.Verilog.DataObjects.Port p in function.PortsList)
+                {
+                    ports.Add(DescribePort(p));
+                }
+                if (ports.Count > 0) lines.Add("arguments: " + string.Join(", ", ports));
+            }
+
+            if (element is pluginVerilog.Verilog.Task_ task)
+            {
+                List<string> ports = new();
+                foreach (pluginVerilog.Verilog.DataObjects.Port p in task.PortsList)
+                {
+                    ports.Add(DescribePort(p));
+                }
+                if (ports.Count > 0) lines.Add("arguments: " + string.Join(", ", ports));
+            }
+
+            if (element is pluginVerilog.Verilog.IPortNameSpace portNameSpace
+                && portNameSpace.PortsList.Count > 0)
+            {
+                List<string> ports = new();
+                foreach (pluginVerilog.Verilog.DataObjects.Port p in portNameSpace.PortsList)
+                {
+                    ports.Add(DescribePort(p));
+                }
+                lines.Add("ports: " + string.Join(", ", ports));
+            }
+
+            if (element is pluginVerilog.Verilog.DataObjects.Constants.Constants constants
+                && constants.Expression != null)
+            {
+                string? value = constants.Expression.CreateString();
+                if (!string.IsNullOrEmpty(value)) lines.Add("value: " + value);
+            }
+
+            if (lines.Count == 0) return null;
+            return string.Join("\n", lines);
+        }
+        catch
+        {
+            // Hover must never fail the request: an unresolved cross-project
+            // element can throw while describing itself.
+            return null;
+        }
+    }
+
+    private static string DescribePort(pluginVerilog.Verilog.DataObjects.Port port)
+    {
+        string direction = port.Direction switch
+        {
+            pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Input => "input ",
+            pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Output => "output ",
+            pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Inout => "inout ",
+            pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Ref => "ref ",
+            _ => "",
+        };
+        string? type = DescribeDataType(port.DataObject?.DataType);
+        return direction + (type == null ? "" : type + " ") + port.Name;
+    }
+
+    private static string? DescribeDataType(
+        pluginVerilog.Verilog.DataObjects.DataTypes.IDataType? dataType)
+    {
+        if (dataType == null) return null;
+        try
+        {
+            string? text = dataType.CreateString();
+            if (!string.IsNullOrEmpty(text)) return text;
+        }
+        catch
+        {
+            // fall through to the enum name
+        }
+        return dataType.Type.ToString();
     }
 
     /// <summary>
@@ -2985,6 +3109,20 @@ internal sealed class InMemoryElement : ISystemVerilogNamedElement
     public SystemVerilogNamedElementKind Kind { get; }
     public SystemVerilogRange Range { get; }
     public bool IsReference { get; }
+
+    /// <summary>
+    /// Declaration detail lines (data type, bit width, port direction, port
+    /// list, ...) captured from the parser element this was built from.
+    ///
+    /// <para>
+    /// The parser knows these but <see cref="ISystemVerilogNamedElement"/> does
+    /// not carry them (it is the narrow, UI-free view every host shares). They
+    /// are captured here at build time so the hover response can show the same
+    /// detail the editor's mouse-over hint does. Null when the element had
+    /// nothing extra to report.
+    /// </para>
+    /// </summary>
+    internal string? Detail { get; init; }
 
     public SystemVerilogRange? DefinitionRange => Range;
 

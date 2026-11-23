@@ -2230,6 +2230,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
                     new SystemVerilogRange(nameStart, bb.Name.Length), this, parent)
                 {
                     Detail = BuildElementDetail(bb),
+                    Source = bb,
                 };
                 block.SelfElement = declElement;
                 RegisterElement(declElement);
@@ -2253,6 +2254,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
                     new SystemVerilogRange(start, element.Name.Length), this, block)
                 {
                     Detail = BuildElementDetail(element),
+                    Source = element,
                 };
                 RegisterElement(memberElement);
                 block.AddMember(memberElement);
@@ -3123,6 +3125,20 @@ internal sealed class InMemoryElement : ISystemVerilogNamedElement
     /// </para>
     /// </summary>
     internal string? Detail { get; init; }
+
+    /// <summary>
+    /// The parser element this was built from, when there is one.
+    ///
+    /// <para>
+    /// The hover response needs the element's own declaration label (the same
+    /// runs the editor's mouse-over hint paints) and
+    /// <see cref="ISystemVerilogNamedElement"/> cannot carry it. Keeping the
+    /// parser element here lets the server ask the plugin adapter for that
+    /// label without duplicating the parser's formatting rules. Null for
+    /// elements the lightweight scanner produced and for reference sites.
+    /// </para>
+    /// </summary>
+    internal pluginVerilog.Verilog.INamedElement? Source { get; init; }
 
     public SystemVerilogRange? DefinitionRange => Range;
 

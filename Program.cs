@@ -105,6 +105,41 @@ internal static class Program
             }
         }
 
+        // Generates (or verifies) the TextMate grammar the extension uses to
+        // colour hover code blocks. The colours and words come from the plugin,
+        // so the VS Code hover cannot drift from the editor's mouse-over hint.
+        if (args.Length > 0
+            && (args[0] == "--write-hover-grammar" || args[0] == "--check-hover-grammar"))
+        {
+            bool write = args[0] == "--write-hover-grammar";
+            string? root = args.Length > 1 ? args[1] : null;
+            if (string.IsNullOrEmpty(root))
+            {
+                Console.Error.WriteLine(
+                    "usage: SystemVerilogLanguageServer " +
+                    (write ? "--write-hover-grammar" : "--check-hover-grammar") +
+                    " <path to the extension folder>");
+                Environment.ExitCode = 2;
+                return;
+            }
+
+            pluginVerilog.CoreBridge.HoverGrammarResult grammar =
+                pluginVerilog.CoreBridge.HoverGrammar.Write(root, write);
+            if (grammar.Failed)
+            {
+                Console.Error.WriteLine("[ERROR] " + grammar.Message);
+                Environment.ExitCode = 1;
+                return;
+            }
+            Console.Out.WriteLine("[ok] " + grammar.Message);
+            if (grammar.Changed && write)
+            {
+                Console.Out.WriteLine(
+                    "     Reload the VS Code window (or rebuild the .vsix) to pick it up.");
+            }
+            return;
+        }
+
         // Prints the manifest as standalone JSON (diagnostics only; the
         // committed package.json is written by --write-hierarchy-menu-manifest).
         if (args.Length > 0 && args[0] == "--hierarchy-menu-manifest")

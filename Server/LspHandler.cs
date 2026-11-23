@@ -1287,12 +1287,23 @@ public sealed partial class LspHandler
         ISystemVerilogNamedElement? def = project.FindDefinition(file, index);
         if (def == null) return null;
 
-        // HoverContent.Build produces the generic signature + definition
-        // path. The parser-side detail (data type, bit width, port direction /
-        // list, argument list) is carried on the in-memory element and is
-        // appended here, so the language server shows what the editor's
-        // mouse-over hint shows.
-        string? content = HoverContent.Build(def);
+        // The signature block is the parser's own declaration label, rendered
+        // as a fenced code block. That is the only way a hover can be coloured:
+        // VS Code's markdown sanitizer allows no style / class attribute, so
+        // the colours come from the TextMate grammar of the fence language
+        // (the extension contributes one built from the same palette).
+        // HoverContent keeps the overall layout (definition path + detail) in
+        // one place for both hosts.
+        string? labelBlock = def is InMemoryElement sourceElement
+            ? pluginVerilog.CoreBridge.ElementLabelAdapter.BuildLabelMarkdown(sourceElement.Source)
+            : null;
+
+        // Elements without a parser label (building blocks, lightweight
+        // scanner symbols) still get the same fence so every hover is coloured
+        // by the same grammar; HoverContent supplies the wording.
+        labelBlock ??= pluginVerilog.CoreBridge.ElementLabelAdapter.BuildSignatureMarkdown(def);
+
+        string? content = HoverContent.Build(def, labelBlock);
         if (content == null) return null;
 
         if (def is InMemoryElement inMemoryElement

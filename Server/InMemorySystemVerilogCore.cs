@@ -208,6 +208,15 @@ internal sealed class InMemoryProject : ISystemVerilogProject,
             _owner?.FindProjectByName(name);
 
     /// <summary>
+    /// The parser's informational log lines. This host has no log view, so
+    /// there is nothing to show them in: returning null makes the parser drop
+    /// them (a log line never affects the parse result). Diagnostics reach the
+    /// client through <c>publishDiagnostics</c> instead.
+    /// </summary>
+    SystemVerilogCore.Parsing.IVerilogDiagnosticLog?
+        SystemVerilogCore.Projects.IVerilogProject.Log => null;
+
+    /// <summary>
     /// The root of this project's item tree.
     /// </summary>
     SystemVerilogCore.Projects.IVerilogItemTree

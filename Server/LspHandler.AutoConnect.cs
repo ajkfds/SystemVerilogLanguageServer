@@ -70,6 +70,7 @@ public sealed partial class LspHandler
                 PortGroup = port.PortGroup,
                 CurrentConnection = port.CurrentConnection,
                 IsSettled = port.IsSettled,
+                KeepsExistingConnection = port.KeepsExistingConnection,
             };
             row.Candidates.AddRange(port.Candidates);
             dto.Ports.Add(row);
@@ -195,6 +196,15 @@ public sealed class AutoConnectPortDto
     [JsonPropertyName("currentConnection")] public string? CurrentConnection { get; set; }
     [JsonPropertyName("candidates")] public List<string> Candidates { get; } = new();
     [JsonPropertyName("isSettled")] public bool IsSettled { get; set; }
+
+    /// <summary>
+    /// True when <see cref="CurrentConnection"/> is not a plain signal name (a
+    /// bit / part select such as <c>AAA[2:1]</c>, a concatenation, <c>~x</c>,
+    /// ...). The client must keep the written text for these rows: the
+    /// candidates are whole signal names, so replacing the connection with
+    /// <c>candidates[0]</c> would drop the select.
+    /// </summary>
+    [JsonPropertyName("keepsExistingConnection")] public bool KeepsExistingConnection { get; set; }
 }
 
 /// <summary>The auto-connect form.</summary>

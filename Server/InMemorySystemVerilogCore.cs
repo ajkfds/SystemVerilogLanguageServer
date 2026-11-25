@@ -802,6 +802,18 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     string SystemVerilogCore.Projects.IVerilogItem.RelativePath =>
         ProjectOwner?.GetProjectRelativePath(AbsolutePath) ?? Id;
 
+    /// <summary>
+    /// This file's children, or null.
+    ///
+    /// <para>
+    /// The language server has no item tree: its hierarchy is derived from the
+    /// parse results on demand, not stored as mutable children. Null is the
+    /// correct answer, and the parser simply skips the write.
+    /// </para>
+    /// </summary>
+    SystemVerilogCore.Projects.IVerilogItemList?
+        SystemVerilogCore.Projects.IVerilogItem.Items => null;
+
     private InMemoryDocument? _document;
     private readonly List<InMemoryElement> _allElements = new();
     private readonly Dictionary<string, List<InMemoryElement>> _byName = new();

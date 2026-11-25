@@ -217,6 +217,20 @@ internal sealed class InMemoryProject : ISystemVerilogProject,
         SystemVerilogCore.Projects.IVerilogProject.Log => null;
 
     /// <summary>
+    /// The include-instance factory, or null.
+    ///
+    /// <para>
+    /// The language server has no item tree and no displayed buffers, so it
+    /// cannot create the editor-style include wrapper. Null tells the parser to
+    /// treat <c>include</c> directives as unresolved, which is correct here: the
+    /// server resolves includes for diagnostics but never colours or re-parses
+    /// them as separate documents.
+    /// </para>
+    /// </summary>
+    SystemVerilogCore.Documents.IVerilogIncludeFileFactory?
+        SystemVerilogCore.Projects.IVerilogProject.IncludeFileFactory => null;
+
+    /// <summary>
     /// The root of this project's item tree.
     /// </summary>
     SystemVerilogCore.Projects.IVerilogItemTree

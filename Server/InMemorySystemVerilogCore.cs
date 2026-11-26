@@ -12,7 +12,8 @@ namespace SystemVerilogLanguageServer.Server;
 /// <summary>
 /// Parser-backed implementation of <see cref="ISystemVerilogCore"/> for the
 /// VS Code language server. The open files are held in memory and parsed by
-/// the real plugin parser through <c>CoreBridge.ParseEngine</c>; every query
+/// the real parser through <c>SystemVerilogCore.Parsing.ParseEngine</c> (the
+/// UI-free engine, so this host parses without the editor stack); every query
 /// (symbols, diagnostics, colours, hierarchy, snippets, ...) is answered from
 /// that parse result.
 ///
@@ -633,8 +634,7 @@ internal sealed class InMemoryProject : ISystemVerilogProject,
     /// <summary>
     /// Assigns the text to the plugin item's <c>CodeDocument</c>. The setter is
     /// not public in a UI-less host (FileCheckAsync is UI dependent), so
-    /// reflection is used — the same approach as
-    /// <c>CoreBridge.ParseEngine</c> / the sv-tests harness.
+    /// reflection is used — the same approach as the sv-tests harness.
     /// </summary>
     private static void SetPluginItemText(CodeEditor2.Data.TextFile textFile, string text)
     {
@@ -1811,10 +1811,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     }
 
     /// <summary>
-    /// Runs the real Verilog parser through the plugin's UI-free
-    /// CoreBridge.ParseEngine and materialises declarations and references
-    /// as InMemoryElements so definition / references / outline queries
-    /// have real data to work with.
+    /// Runs the real Verilog parser through the UI-free
+    /// <c>SystemVerilogCore.Parsing.ParseEngine</c> and materialises
+    /// declarations and references as InMemoryElements so definition /
+    /// references / outline queries have real data to work with.
     /// </summary>
     private void BuildSymbols(string text)
     {
@@ -1970,20 +1970,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         // create / reuse a plugin-side VerilogFile for this in-memory file
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
 
-        // NOTE: the plugin engine is still used here.
-        //
-        // The UI-free engine now covers colours (GetColorSpans) and fold regions
-        // (GetFoldRegions), and diagnostics reach the host (the buffer reports
-        // its file). Switching over still leaves 6 failing tests, all from the
-        // remaining concrete-document readers:
-        //   - CompletionAdapter x3 (completion candidates)
-        //   - SnippetAdapter x1 (port invert)
-        //   - DocumentParser's constructor x1 (instance parse NREs on a null
-        //     concrete document)
-        //   - CollectDiagnostics x1 (it narrows VerilogDocument to the concrete
-        //     CodeDocument to clamp the span)
-        // Those have to move onto the contract first.
-        return pluginVerilog.CoreBridge.ParseEngine.ParseSystemVerilogAsync(text, verilogFile);
+        // Parse through the UI-free engine, handing it THIS host's document.
+        return SystemVerilogCore.Parsing.ParseEngine.ParseSystemVerilogAsync(
+            text, verilogFile, null,
+            _codeDocument as SystemVerilogCore.Documents.IVerilogTextDocument);
     }
 
     /// <summary>
@@ -2128,10 +2118,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             // WRONG file (its TextFile / SystemVerilog flag / colour table), so
             // only part of the opened text ended up coloured - the syntax
             // highlighting collapsed after the instance was clicked.
-            // See the note in ParseSystemVerilog: the plugin engine is kept until
-            // the UI-free engine is verified to behave identically here.
-            parsed = pluginVerilog.CoreBridge.ParseEngine.ParseInstanceAsync(
-                CodeDocumentText, pluginFile, moduleName, overrides).GetAwaiter().GetResult();
+            // Same engine as ParseSystemVerilog: the UI-free one, so this host
+            // no longer needs the plugin assembly to parse.
+            //
+            // THIS host's buffer is handed over for the same reason: the buffer
+            // reports the file, and a parse drops every message whose buffer
+            // belongs to no file. Without it the instance parse produced no
+            // diagnostics at all (the "override <value>" hint included).
+            parsed = SystemVerilogCore.Parsing.ParseEngine.ParseInstanceAsync(
+                CodeDocumentText, pluginFile, moduleName, overrides, null,
+                _codeDocument as SystemVerilogCore.Documents.IVerilogTextDocument)
+                .GetAwaiter().GetResult();
         }
         catch (Exception ex)
         {

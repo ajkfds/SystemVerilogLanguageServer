@@ -790,8 +790,16 @@ internal sealed class InMemoryProject : ISystemVerilogProject,
 }
 
 internal sealed class InMemoryFile : ISystemVerilogFile,
-    SystemVerilogCore.Projects.IVerilogItem
+    SystemVerilogCore.Projects.IVerilogItem,
+    // The parser-facing identity view: a parse records which file a diagnostic
+    // came from, and the buffer has to answer that.
+    SystemVerilogCore.Documents.IVerilogDocumentFile
 {
+    string SystemVerilogCore.Documents.IVerilogDocumentFile.Id => Id;
+    string SystemVerilogCore.Documents.IVerilogDocumentFile.RelativePath =>
+        ProjectOwner?.GetProjectRelativePath(AbsolutePath) ?? Id;
+    string SystemVerilogCore.Documents.IVerilogDocumentFile.Name =>
+        System.IO.Path.GetFileName(AbsolutePath ?? Id) ?? Id;
     // ---- SystemVerilogCore.Projects.IVerilogItem ---------------------
     // The parser-facing view of a tree item. AbsolutePath is the identity the
     // language server has; the relative path is derived from the project root.
@@ -837,7 +845,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         Id = id;
         AbsolutePath = absolutePath;
         IsSystemVerilog = isSystemVerilog;
-        _codeDocument = new InMemoryCodeDocument(text);
+        _codeDocument = new InMemoryCodeDocument(text) { Owner = this };
     }
 
     /// <summary>
@@ -1963,14 +1971,15 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // NOTE: the plugin engine is still used here.
         //
-        // The UI-free engine (SystemVerilogCore.Parsing.ParseEngine) works and is
-        // verified to parse correctly, but switching this host over still leaves
-        // 24 failing tests: the plugin's CoreBridge adapters (completion /
-        // formatting / snippet / tool menu / auto-connect / colour segments) read
-        // the parse result through the plugin's CONCRETE CodeDocument
-        // (`EditorCodeDocument()`), which is null when the parse used this host's
-        // document. The engine can only replace the plugin one once those adapters
-        // are moved onto the contract too.
+        // The UI-free engine now covers the colour path (ColorSegmentAdapter reads
+        // spans through the contract's GetColorSpans) and diagnostics reach the
+        // host (the buffer reports its file). Switching this host over still
+        // leaves 20 failing tests, all of them "a diagnostic is missing" or
+        // "folding range is empty": those come from paths that read the parse
+        // result through the plugin's CONCRETE CodeDocument
+        // (EditorCodeDocument()), which is null when the parse used this host's
+        // document. The remaining adapters (completion / snippet / tool menu /
+        // auto-connect / formatting) have to move onto the contract first.
         return pluginVerilog.CoreBridge.ParseEngine.ParseSystemVerilogAsync(text, verilogFile);
     }
 
@@ -3321,10 +3330,17 @@ internal sealed class InMemoryCodeDocument : ISystemVerilogCodeDocument,
     // folding ranges from the parse result instead), so those are no-ops here.
 
     /// <summary>Colour spans, in document order, as (index, length, palette).</summary>
-    internal List<(int Index, int Length, byte ColorIndex)> Colors { get; } = new();
+    internal List<SystemVerilogCore.Documents.VerilogColorSpan> Colors { get; } = new();
 
-    void SystemVerilogCore.Documents.IVerilogTextDocument.SetColorAt(int index, byte colorIndex, int length) =>
-        Colors.Add((index, length, colorIndex));
+    void SystemVerilogCore.Documents.IVerilogTextDocument.SetColorAt(int index, byte colorIndex, int length)
+    {
+        if (length <= 0) return;
+        Colors.Add(new SystemVerilogCore.Documents.VerilogColorSpan(index, length, colorIndex));
+    }
+
+    /// <summary>The colour spans the parser painted into this buffer.</summary>
+    IReadOnlyList<SystemVerilogCore.Documents.VerilogColorSpan>
+        SystemVerilogCore.Documents.IVerilogTextDocument.GetColorSpans() => Colors;
 
     /// <summary>No-op: this host reports diagnostics from the parse result.</summary>
     void SystemVerilogCore.Documents.IVerilogTextDocument.SetMarkAt(int index, int length, byte markIndex)
@@ -3354,8 +3370,19 @@ internal sealed class InMemoryCodeDocument : ISystemVerilogCodeDocument,
         SystemVerilogCore.Documents.IVerilogTextDocument.CreateSnapshot() =>
         new InMemoryCodeDocument(_text);
 
+    /// <summary>
+    /// The file this buffer belongs to, so a parse can attach diagnostics to it.
+    ///
+    /// <para>
+    /// A parse drops a message when the buffer belongs to no file (there would be
+    /// nothing to attach it to), so this must be set for the host's diagnostics
+    /// to survive.
+    /// </para>
+    /// </summary>
+    internal SystemVerilogCore.Documents.IVerilogDocumentFile? Owner { get; set; }
+
     SystemVerilogCore.Documents.IVerilogDocumentFile?
-        SystemVerilogCore.Documents.IVerilogTextDocument.File => null;
+        SystemVerilogCore.Documents.IVerilogTextDocument.File => Owner;
 
     public char GetCharAt(int index) => index < 0 || index >= _text.Length ? '\0' : _text[index];
 

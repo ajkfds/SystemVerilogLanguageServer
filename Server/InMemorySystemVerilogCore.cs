@@ -910,7 +910,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// </summary>
     internal void SetText(string text)
     {
-        _codeDocument = new InMemoryCodeDocument(text);
+        // Keep the owner: a parse drops a diagnostic when the buffer belongs to
+        // no file, so replacing the document without it silently loses every
+        // message for the edited text.
+        _codeDocument = new InMemoryCodeDocument(text) { Owner = this };
         _document = null;
         _verilogFile = null;
 
@@ -1707,19 +1710,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         EnsureBuilt();
         List<(int, int, string?)> result = new();
-        // The parse result only exposes the UI-free document contract now (it
-        // no longer names the editor's document type). The foldings live on the
-        // editor's concrete document, so narrow here.
-        CodeEditor2.CodeEditor.CodeDocument? doc =
-            _parsedDocument?.VerilogDocument as CodeEditor2.CodeEditor.CodeDocument;
+        // Through the document contract: the parse result no longer names the
+        // editor's document type, and the fold regions are on the contract.
+        SystemVerilogCore.Documents.IVerilogTextDocument? doc = _parsedDocument?.VerilogDocument;
         if (doc == null) return result;
 
-        foreach (AvaloniaEdit.Folding.NewFolding folding in doc.Foldings.Foldings)
+        foreach (SystemVerilogCore.Documents.VerilogFoldRegion folding in doc.GetFoldRegions())
         {
-            int startLine = doc.GetLineAt(folding.StartOffset);
+            int startLine = doc.GetLineAt(folding.StartIndex);
             // the fold ends on the line of the last character inside the region
-            int endIndex = folding.EndOffset - 1;
-            if (endIndex < folding.StartOffset) endIndex = folding.StartOffset;
+            int endIndex = folding.LastIndex;
+            if (endIndex < folding.StartIndex) endIndex = folding.StartIndex;
             if (endIndex > doc.Length) endIndex = doc.Length;
             int endLine = doc.GetLineAt(endIndex);
             if (endLine <= startLine) continue;   // single-line region: nothing to fold
@@ -1863,10 +1864,9 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     private static IEnumerable<ISystemVerilogDiagnostic> CollectDiagnostics(SystemVerilogCore.Verilog.ParsedDocument parsedDoc)
     {
         List<ISystemVerilogDiagnostic> result = new();
-        // See the note in GetFoldingRanges: the parse result exposes only the
-        // UI-free document contract.
-        CodeEditor2.CodeEditor.CodeDocument? doc =
-            parsedDoc.VerilogDocument as CodeEditor2.CodeEditor.CodeDocument;
+        // Through the document contract: the parse result no longer names the
+        // editor's document type.
+        SystemVerilogCore.Documents.IVerilogTextDocument? doc = parsedDoc.VerilogDocument;
         // Messages are the parser's own type now (they used to be the editor's
         // base-class Message, which forced a downcast here).
         foreach (SystemVerilogCore.Verilog.ParsedDocument.Message message in parsedDoc.Messages)
@@ -1908,7 +1908,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// trailing newline). Both cases are repaired here: a zero length becomes
     /// one character, and a span that reaches a line break is cut before it.
     /// </remarks>
-    private static int GetDiagnosticLength(CodeEditor2.CodeEditor.CodeDocument? doc, int start, int messageLength)
+    private static int GetDiagnosticLength(
+        SystemVerilogCore.Documents.IVerilogTextDocument? doc, int start, int messageLength)
     {
         if (doc == null || start >= doc.Length) return 1;
 
@@ -1971,15 +1972,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // NOTE: the plugin engine is still used here.
         //
-        // The UI-free engine now covers the colour path (ColorSegmentAdapter reads
-        // spans through the contract's GetColorSpans) and diagnostics reach the
-        // host (the buffer reports its file). Switching this host over still
-        // leaves 20 failing tests, all of them "a diagnostic is missing" or
-        // "folding range is empty": those come from paths that read the parse
-        // result through the plugin's CONCRETE CodeDocument
-        // (EditorCodeDocument()), which is null when the parse used this host's
-        // document. The remaining adapters (completion / snippet / tool menu /
-        // auto-connect / formatting) have to move onto the contract first.
+        // The UI-free engine now covers colours (GetColorSpans) and fold regions
+        // (GetFoldRegions), and diagnostics reach the host (the buffer reports
+        // its file). Switching over still leaves 6 failing tests, all from the
+        // remaining concrete-document readers:
+        //   - CompletionAdapter x3 (completion candidates)
+        //   - SnippetAdapter x1 (port invert)
+        //   - DocumentParser's constructor x1 (instance parse NREs on a null
+        //     concrete document)
+        //   - CollectDiagnostics x1 (it narrows VerilogDocument to the concrete
+        //     CodeDocument to clamp the span)
+        // Those have to move onto the contract first.
         return pluginVerilog.CoreBridge.ParseEngine.ParseSystemVerilogAsync(text, verilogFile);
     }
 
@@ -3347,16 +3350,19 @@ internal sealed class InMemoryCodeDocument : ISystemVerilogCodeDocument,
     {
     }
 
-    /// <summary>No-op: this host reports folding ranges from the parse result.</summary>
-    void SystemVerilogCore.Documents.IVerilogTextDocument.AppendBlock(int startIndex, int lastIndex)
-    {
-    }
+    /// <summary>Fold regions the parser recorded on this buffer.</summary>
+    internal List<SystemVerilogCore.Documents.VerilogFoldRegion> FoldRegions { get; } = new();
 
-    /// <summary>No-op: this host reports folding ranges from the parse result.</summary>
+    void SystemVerilogCore.Documents.IVerilogTextDocument.AppendBlock(int startIndex, int lastIndex) =>
+        FoldRegions.Add(new SystemVerilogCore.Documents.VerilogFoldRegion(startIndex, lastIndex, null));
+
     void SystemVerilogCore.Documents.IVerilogTextDocument.AppendBlock(
-        int startIndex, int lastIndex, string name, bool defaultClose)
-    {
-    }
+        int startIndex, int lastIndex, string name, bool defaultClose) =>
+        FoldRegions.Add(new SystemVerilogCore.Documents.VerilogFoldRegion(startIndex, lastIndex, name));
+
+    /// <summary>The fold regions the parser recorded on this buffer.</summary>
+    IReadOnlyList<SystemVerilogCore.Documents.VerilogFoldRegion>
+        SystemVerilogCore.Documents.IVerilogTextDocument.GetFoldRegions() => FoldRegions;
 
     string SystemVerilogCore.Documents.IVerilogTextDocument.CreateString() => _text;
 

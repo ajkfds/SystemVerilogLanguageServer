@@ -1879,7 +1879,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
                 SystemVerilogCore.Verilog.ParsedDocument.Message.MessageType.Hint => SystemVerilogSeverity.Hint,
                 _ => SystemVerilogSeverity.Error,
             };
-            string code = pluginVerilog.CoreBridge.DiagnosticCodeMap.FromMessage(message.Text);
+            string code = SystemVerilogCore.Diagnostics.DiagnosticCodeMap.FromMessage(message.Text);
             int start = message.Index;
             if (start < 0) continue; // skip messages without a document position
 
@@ -2976,8 +2976,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     };
 
     /// <summary>
-    /// Builds tokens from the real parser's per-line color segments via the
-    /// plugin's ColorSegmentAdapter. Returns null when no parsed document is
+    /// Builds tokens from the real parser's colour spans through the UI-free
+    /// <c>ColorSegmentReader</c>. Returns null when no parsed document is
     /// available (e.g. the real parser was skipped).
     /// </summary>
     private List<TokenInfo>? GetParserColorTokens()
@@ -2987,9 +2987,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             SystemVerilogCore.Verilog.ParsedDocument? parsed = _parsedDocument;
             if (parsed == null) return null;
 
-            CodeEditor2.CodeEditor.CodeDrawStyle baseDrawStyle = new CodeEditor2.CodeEditor.CodeDrawStyle();
-            List<pluginVerilog.CoreBridge.ColorSegmentAdapter.Segment> segments =
-                pluginVerilog.CoreBridge.ColorSegmentAdapter.GetSegments(parsed);
+            List<SystemVerilogCore.Diagnostics.ColorSegmentReader.Segment> segments =
+                SystemVerilogCore.Diagnostics.ColorSegmentReader.GetSegments(parsed.VerilogDocument);
             if (segments.Count == 0) return null;
 
             List<TokenInfo> tokens = new(segments.Count);
@@ -3006,30 +3005,36 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     }
 
     /// <summary>
-    /// Maps the plugin CodeDrawStyle palette index to the LSP token type
-    /// legend (keyword, comment, string, number, macro, function, type,
-    /// variable, property, parameter, register, identifier).
+    /// Maps the parser's palette slot to the LSP token type legend (keyword,
+    /// comment, string, number, macro, function, type, variable, property,
+    /// parameter, register, identifier).
     /// </summary>
-    private static TokenTypes ColorTypeToTokenType(pluginVerilog.CodeDrawStyle.ColorType colorType) => colorType switch
+    /// <remarks>
+    /// Takes the contract enum <see cref="SystemVerilogCore.Documents.VerilogColorType"/>
+    /// rather than the plugin's alias of it, so this mapping does not name the
+    /// editor assembly.
+    /// </remarks>
+    private static TokenTypes ColorTypeToTokenType(
+        SystemVerilogCore.Documents.VerilogColorType colorType) => colorType switch
     {
-        pluginVerilog.CodeDrawStyle.ColorType.Keyword => TokenTypes.Keyword,
-        pluginVerilog.CodeDrawStyle.ColorType.Comment => TokenTypes.Comment,
+        SystemVerilogCore.Documents.VerilogColorType.Keyword => TokenTypes.Keyword,
+        SystemVerilogCore.Documents.VerilogColorType.Comment => TokenTypes.Comment,
         // Comment annotations (`@sync`, `@clock`, `@scope ...`) are painted
         // INSIDE the comment with HighLightedComment / CommentAnnotation.
         // Reporting them as "comment" made them the same colour as the
         // surrounding comment text, i.e. invisible as annotations.
-        pluginVerilog.CodeDrawStyle.ColorType.HighLightedComment => TokenTypes.Annotation,
-        pluginVerilog.CodeDrawStyle.ColorType.CommentAnnotation => TokenTypes.Annotation,
-        pluginVerilog.CodeDrawStyle.ColorType.Number => TokenTypes.Number,
-        // ColorType.Identifier is the parser's "declared name" colour: the
-        // module name of an instantiation, the instance name, a named port
-        // label, a function / task name. It must map to the "identifier" token
-        // type (teal), which is what the editor shows.
-        pluginVerilog.CodeDrawStyle.ColorType.Identifier => TokenTypes.Identifier,
-        pluginVerilog.CodeDrawStyle.ColorType.Register => TokenTypes.Register,
-        pluginVerilog.CodeDrawStyle.ColorType.Net => TokenTypes.Property,
-        pluginVerilog.CodeDrawStyle.ColorType.Variable => TokenTypes.Variable,
-        pluginVerilog.CodeDrawStyle.ColorType.Parameter => TokenTypes.Parameter,
+        SystemVerilogCore.Documents.VerilogColorType.HighLightedComment => TokenTypes.Annotation,
+        SystemVerilogCore.Documents.VerilogColorType.CommentAnnotation => TokenTypes.Annotation,
+        SystemVerilogCore.Documents.VerilogColorType.Number => TokenTypes.Number,
+        // Identifier is the parser's "declared name" colour: the module name of
+        // an instantiation, the instance name, a named port label, a function /
+        // task name. It must map to the "identifier" token type (teal), which
+        // is what the editor shows.
+        SystemVerilogCore.Documents.VerilogColorType.Identifier => TokenTypes.Identifier,
+        SystemVerilogCore.Documents.VerilogColorType.Register => TokenTypes.Register,
+        SystemVerilogCore.Documents.VerilogColorType.Net => TokenTypes.Property,
+        SystemVerilogCore.Documents.VerilogColorType.Variable => TokenTypes.Variable,
+        SystemVerilogCore.Documents.VerilogColorType.Parameter => TokenTypes.Parameter,
         // Anything else (Normal / Inactivated) is a plain reference: the
         // default foreground, never teal.
         _ => TokenTypes.Reference,

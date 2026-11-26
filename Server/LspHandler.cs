@@ -1295,13 +1295,13 @@ public sealed partial class LspHandler
         // HoverContent keeps the overall layout (definition path + detail) in
         // one place for both hosts.
         string? labelBlock = def is InMemoryElement sourceElement
-            ? pluginVerilog.CoreBridge.ElementLabelAdapter.BuildLabelMarkdown(sourceElement.Source)
+            ? SystemVerilogCore.Documents.ElementLabelReader.BuildLabelMarkdown(sourceElement.Source)
             : null;
 
         // Elements without a parser label (building blocks, lightweight
         // scanner symbols) still get the same fence so every hover is coloured
         // by the same grammar; HoverContent supplies the wording.
-        labelBlock ??= pluginVerilog.CoreBridge.ElementLabelAdapter.BuildSignatureMarkdown(def);
+        labelBlock ??= SystemVerilogCore.Documents.ElementLabelReader.BuildSignatureMarkdown(def);
 
         string? content = HoverContent.Build(def, labelBlock);
         if (content == null) return null;

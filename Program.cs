@@ -123,8 +123,8 @@ internal static class Program
                 return;
             }
 
-            pluginVerilog.CoreBridge.HoverGrammarResult grammar =
-                pluginVerilog.CoreBridge.HoverGrammar.Write(root, write);
+            SystemVerilogCore.Documents.HoverGrammarResult grammar =
+                SystemVerilogCore.Documents.HoverGrammar.Write(root, write);
             if (grammar.Failed)
             {
                 Console.Error.WriteLine("[ERROR] " + grammar.Message);

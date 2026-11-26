@@ -782,7 +782,7 @@ internal sealed class InMemoryProject : ISystemVerilogProject,
     /// LSP textDocument/completion support: forwards to the file's
     /// CompletionContext based autocomplete entries.
     /// </summary>
-    public IReadOnlyList<pluginVerilog.CoreBridge.CompletionAdapter.CompletionEntry>? GetCompletionItems(ISystemVerilogFile file, int index)
+    public IReadOnlyList<SystemVerilogCore.Completion.CompletionProvider.CompletionEntry>? GetCompletionItems(ISystemVerilogFile file, int index)
     {
         if (file is not InMemoryFile mem) return null;
         return mem.GetCompletionItems(index);
@@ -1631,12 +1631,13 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// parse result at the given index and returns plain label/kind entries.
     /// Returns null when completion is unavailable (no real-parser result).
     /// </summary>
-    internal IReadOnlyList<pluginVerilog.CoreBridge.CompletionAdapter.CompletionEntry>? GetCompletionItems(int index)
+    internal IReadOnlyList<SystemVerilogCore.Completion.CompletionProvider.CompletionEntry>? GetCompletionItems(int index)
     {
         EnsureBuilt();
         if (_parsedDocument == null) return null;
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
-        return pluginVerilog.CoreBridge.CompletionAdapter.GetCompletionItems(verilogFile, _parsedDocument, index);
+        return SystemVerilogCore.Completion.CompletionProvider.GetCompletionItems(
+            verilogFile, _parsedDocument, index);
     }
 
     /// <summary>
@@ -1692,12 +1693,13 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// argument being typed), produced by the plugin's partial parse. Returns
     /// null when there is no hint at the caret.
     /// </summary>
-    internal IReadOnlyList<pluginVerilog.CoreBridge.SignatureHelpAdapter.SignatureEntry>? GetSignatures(int index)
+    internal IReadOnlyList<SystemVerilogCore.Completion.SignatureHelpProvider.SignatureEntry>? GetSignatures(int index)
     {
         EnsureBuilt();
         if (_parsedDocument == null) return null;
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
-        return pluginVerilog.CoreBridge.SignatureHelpAdapter.GetSignatures(verilogFile, _parsedDocument, index);
+        return SystemVerilogCore.Completion.SignatureHelpProvider.GetSignatures(
+            verilogFile, _parsedDocument, index);
     }
 
     /// <summary>

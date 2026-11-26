@@ -1346,7 +1346,7 @@ public sealed partial class LspHandler
         // end of the text, which is a valid completion position).
         if (index > found.CodeDocument.Length) index = found.CodeDocument.Length;
 
-        IReadOnlyList<pluginVerilog.CoreBridge.CompletionAdapter.CompletionEntry>? entries =
+        IReadOnlyList<SystemVerilogCore.Completion.CompletionProvider.CompletionEntry>? entries =
             project.GetCompletionItems(found, index);
         if (entries == null) return null;
 

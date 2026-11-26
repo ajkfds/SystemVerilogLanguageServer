@@ -187,7 +187,7 @@ public sealed partial class LspHandler
         if (!TryGetFileAndIndex(parameters, out var file, out int index)) return null;
         if (file is not InMemoryFile mem) return null;
 
-        IReadOnlyList<pluginVerilog.CoreBridge.SignatureHelpAdapter.SignatureEntry>? signatures =
+        IReadOnlyList<SystemVerilogCore.Completion.SignatureHelpProvider.SignatureEntry>? signatures =
             mem.GetSignatures(index);
         if (signatures == null || signatures.Count == 0) return null;
 

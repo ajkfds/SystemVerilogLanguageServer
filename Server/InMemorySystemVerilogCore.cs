@@ -1699,7 +1699,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         EnsureBuilt();
         List<(int, int, string?)> result = new();
-        CodeEditor2.CodeEditor.CodeDocument? doc = _parsedDocument?.CodeDocument;
+        // The parse result only exposes the UI-free document contract now (it
+        // no longer names the editor's document type). The foldings live on the
+        // editor's concrete document, so narrow here.
+        CodeEditor2.CodeEditor.CodeDocument? doc =
+            _parsedDocument?.VerilogDocument as CodeEditor2.CodeEditor.CodeDocument;
         if (doc == null) return result;
 
         foreach (AvaloniaEdit.Folding.NewFolding folding in doc.Foldings.Foldings)
@@ -1851,7 +1855,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     private static IEnumerable<ISystemVerilogDiagnostic> CollectDiagnostics(pluginVerilog.Verilog.ParsedDocument parsedDoc)
     {
         List<ISystemVerilogDiagnostic> result = new();
-        CodeEditor2.CodeEditor.CodeDocument? doc = parsedDoc.CodeDocument;
+        // See the note in GetFoldingRanges: the parse result exposes only the
+        // UI-free document contract.
+        CodeEditor2.CodeEditor.CodeDocument? doc =
+            parsedDoc.VerilogDocument as CodeEditor2.CodeEditor.CodeDocument;
         // Messages are the parser's own type now (they used to be the editor's
         // base-class Message, which forced a downcast here).
         foreach (pluginVerilog.Verilog.ParsedDocument.Message message in parsedDoc.Messages)
@@ -2522,7 +2529,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// </summary>
     private int GetTokenLength(int index, int fallbackLength)
     {
-        CodeEditor2.CodeEditor.CodeDocument? doc = _parsedDocument?.CodeDocument;
+        // See the note in GetFoldingRanges: the parse result exposes only the
+        // UI-free document contract, and the tokenizer is a static helper on the
+        // editor's document type.
+        CodeEditor2.CodeEditor.CodeDocument? doc =
+            _parsedDocument?.VerilogDocument as CodeEditor2.CodeEditor.CodeDocument;
         if (doc != null && index >= 0 && index < doc.Length)
         {
             int tokenIndex = index;

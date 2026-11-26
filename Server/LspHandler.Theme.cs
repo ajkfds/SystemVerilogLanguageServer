@@ -31,19 +31,19 @@ public sealed partial class LspHandler
     /// order of the token types must match the legend advertised in
     /// <c>initialize</c> (see <see cref="SemanticTokenTypes"/>).
     /// </summary>
-    private static readonly (string TokenType, pluginVerilog.CodeDrawStyle.ColorType ColorType)[] TokenColorMap =
+    private static readonly (string TokenType, SystemVerilogCore.Documents.VerilogColorType ColorType)[] TokenColorMap =
     {
-        ("keyword", pluginVerilog.CodeDrawStyle.ColorType.Keyword),
-        ("comment", pluginVerilog.CodeDrawStyle.ColorType.Comment),
-        ("string", pluginVerilog.CodeDrawStyle.ColorType.Number),
-        ("number", pluginVerilog.CodeDrawStyle.ColorType.Number),
-        ("macro", pluginVerilog.CodeDrawStyle.ColorType.Parameter),
-        ("function", pluginVerilog.CodeDrawStyle.ColorType.Identifier),
-        ("type", pluginVerilog.CodeDrawStyle.ColorType.Identifier),
-        ("variable", pluginVerilog.CodeDrawStyle.ColorType.Variable),
-        ("property", pluginVerilog.CodeDrawStyle.ColorType.Net),
-        ("parameter", pluginVerilog.CodeDrawStyle.ColorType.Parameter),
-        ("register", pluginVerilog.CodeDrawStyle.ColorType.Register),
+        ("keyword", SystemVerilogCore.Documents.VerilogColorType.Keyword),
+        ("comment", SystemVerilogCore.Documents.VerilogColorType.Comment),
+        ("string", SystemVerilogCore.Documents.VerilogColorType.Number),
+        ("number", SystemVerilogCore.Documents.VerilogColorType.Number),
+        ("macro", SystemVerilogCore.Documents.VerilogColorType.Parameter),
+        ("function", SystemVerilogCore.Documents.VerilogColorType.Identifier),
+        ("type", SystemVerilogCore.Documents.VerilogColorType.Identifier),
+        ("variable", SystemVerilogCore.Documents.VerilogColorType.Variable),
+        ("property", SystemVerilogCore.Documents.VerilogColorType.Net),
+        ("parameter", SystemVerilogCore.Documents.VerilogColorType.Parameter),
+        ("register", SystemVerilogCore.Documents.VerilogColorType.Register),
         // "identifier" is the token type for a *declaration* name: the module
         // name of an instantiation, the instance name, a named port label
         // (`.clk`), a function / task name. The editor paints all of those
@@ -54,18 +54,18 @@ public sealed partial class LspHandler
         // Plain *references* (a signal read in an expression) are emitted as
         // their data-object type (property / variable / register / parameter),
         // so they are unaffected by this rule.
-        ("identifier", pluginVerilog.CodeDrawStyle.ColorType.Identifier),
+        ("identifier", SystemVerilogCore.Documents.VerilogColorType.Identifier),
         // "reference" is the generic fallback token the lightweight scanner
         // emits for a word it could not classify (it has no symbol table). It
         // must stay the default foreground, otherwise every unresolved word in
         // a file the real parser could not handle would turn teal.
-        ("reference", pluginVerilog.CodeDrawStyle.ColorType.Normal),
+        ("reference", SystemVerilogCore.Documents.VerilogColorType.Normal),
         // Comment annotations inside a comment: the editor paints the whole
         // comment with ColorType.Comment and then re-paints the annotation
         // tokens (`@sync`, `:`, the clock name, `@clock`, `@scope ...`) with
         // HighLightedComment / CommentAnnotation. Both of those palette entries
         // hold the same value, so one token type covers them.
-        ("annotation", pluginVerilog.CodeDrawStyle.ColorType.CommentAnnotation),
+        ("annotation", SystemVerilogCore.Documents.VerilogColorType.CommentAnnotation),
     };
 
     /// <summary>
@@ -94,13 +94,12 @@ public sealed partial class LspHandler
     /// </summary>
     private object? HandleTheme(JsonElement parameters, CancellationToken cancellationToken)
     {
-        pluginVerilog.CodeDrawStyle style = new();
         Dictionary<string, string> rules = new();
 
-        foreach ((string tokenType, pluginVerilog.CodeDrawStyle.ColorType colorType) in TokenColorMap)
+        // The palette is UI-free, so the server reads it without Avalonia.
+        foreach ((string tokenType, SystemVerilogCore.Documents.VerilogColorType colorType) in TokenColorMap)
         {
-            Avalonia.Media.Color color = style.GetColor(colorType);
-            rules[tokenType] = ToHex(color);
+            rules[tokenType] = SystemVerilogCore.Documents.VerilogColorPalette.ToHex(colorType);
         }
 
         return new ThemeResult

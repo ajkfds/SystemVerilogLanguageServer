@@ -1960,6 +1960,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         // create / reuse a plugin-side VerilogFile for this in-memory file
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        // NOTE: the plugin engine is still used here. A UI-free engine now exists
+        // (SystemVerilogCore.Parsing.ParseEngine) and compiles, but switching this
+        // host over changed behaviour in 49 tests (missing diagnostics, missing
+        // hierarchy children): the plugin engine also stores the result on the
+        // VerilogFile and drives the editor's document, which this host relies on.
+        // Wiring it up is a separate, verifiable step.
         return pluginVerilog.CoreBridge.ParseEngine.ParseSystemVerilogAsync(text, verilogFile);
     }
 
@@ -2105,6 +2111,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             // WRONG file (its TextFile / SystemVerilog flag / colour table), so
             // only part of the opened text ended up coloured - the syntax
             // highlighting collapsed after the instance was clicked.
+            // See the note in ParseSystemVerilog: the plugin engine is kept until
+            // the UI-free engine is verified to behave identically here.
             parsed = pluginVerilog.CoreBridge.ParseEngine.ParseInstanceAsync(
                 CodeDocumentText, pluginFile, moduleName, overrides).GetAwaiter().GetResult();
         }

@@ -75,8 +75,8 @@ internal static class Program
             // regenerated. Doing it here keeps "everything the extension takes
             // from C#" in one command.
             string iconsDirectory = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(path))!, "icons");
-            pluginVerilog.CoreBridge.BadgeIconResult icons =
-                pluginVerilog.CoreBridge.BadgeIconGenerator.Generate(iconsDirectory, write);
+            SystemVerilogCore.Menus.BadgeIconResult icons =
+                SystemVerilogCore.Menus.BadgeIconGenerator.Generate(iconsDirectory, write);
 
             if (icons.Failed)
             {

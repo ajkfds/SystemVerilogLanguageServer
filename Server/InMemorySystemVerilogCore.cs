@@ -1960,12 +1960,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         // create / reuse a plugin-side VerilogFile for this in-memory file
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
-        // NOTE: the plugin engine is still used here. A UI-free engine now exists
-        // (SystemVerilogCore.Parsing.ParseEngine) and compiles, but switching this
-        // host over changed behaviour in 49 tests (missing diagnostics, missing
-        // hierarchy children): the plugin engine also stores the result on the
-        // VerilogFile and drives the editor's document, which this host relies on.
-        // Wiring it up is a separate, verifiable step.
+
+        // NOTE: the plugin engine is still used here.
+        //
+        // The UI-free engine (SystemVerilogCore.Parsing.ParseEngine) works and is
+        // verified to parse correctly, but switching this host over still leaves
+        // 24 failing tests: the plugin's CoreBridge adapters (completion /
+        // formatting / snippet / tool menu / auto-connect / colour segments) read
+        // the parse result through the plugin's CONCRETE CodeDocument
+        // (`EditorCodeDocument()`), which is null when the parse used this host's
+        // document. The engine can only replace the plugin one once those adapters
+        // are moved onto the contract too.
         return pluginVerilog.CoreBridge.ParseEngine.ParseSystemVerilogAsync(text, verilogFile);
     }
 
@@ -3292,7 +3297,8 @@ internal sealed class InMemoryBlock : ISystemVerilogBuildingBlock
     public ISystemVerilogBuildingBlock? Owner => null;
 }
 
-internal sealed class InMemoryCodeDocument : ISystemVerilogCodeDocument
+internal sealed class InMemoryCodeDocument : ISystemVerilogCodeDocument,
+    SystemVerilogCore.Documents.IVerilogTextDocument
 {
     private string _text;
     private int[] _lineStarts;
@@ -3307,6 +3313,49 @@ internal sealed class InMemoryCodeDocument : ISystemVerilogCodeDocument
     public int Length => _text.Length;
     public int LineCount => _lineStarts.Length;
     public ulong Version { get; private set; }
+
+    // ---- IVerilogTextDocument --------------------------------------------
+    // The parser writes colour spans, diagnostic marks and fold regions into
+    // the buffer it tokenises. This host reads the colours back (semantic
+    // tokens) and ignores the marks / foldings (it reports diagnostics and
+    // folding ranges from the parse result instead), so those are no-ops here.
+
+    /// <summary>Colour spans, in document order, as (index, length, palette).</summary>
+    internal List<(int Index, int Length, byte ColorIndex)> Colors { get; } = new();
+
+    void SystemVerilogCore.Documents.IVerilogTextDocument.SetColorAt(int index, byte colorIndex, int length) =>
+        Colors.Add((index, length, colorIndex));
+
+    /// <summary>No-op: this host reports diagnostics from the parse result.</summary>
+    void SystemVerilogCore.Documents.IVerilogTextDocument.SetMarkAt(int index, int length, byte markIndex)
+    {
+    }
+
+    /// <summary>No-op: this host reports folding ranges from the parse result.</summary>
+    void SystemVerilogCore.Documents.IVerilogTextDocument.AppendBlock(int startIndex, int lastIndex)
+    {
+    }
+
+    /// <summary>No-op: this host reports folding ranges from the parse result.</summary>
+    void SystemVerilogCore.Documents.IVerilogTextDocument.AppendBlock(
+        int startIndex, int lastIndex, string name, bool defaultClose)
+    {
+    }
+
+    string SystemVerilogCore.Documents.IVerilogTextDocument.CreateString() => _text;
+
+    string SystemVerilogCore.Documents.IVerilogTextDocument.CreateString(int startIndex, int length) =>
+        GetText(startIndex, length);
+
+    int SystemVerilogCore.Documents.IVerilogTextDocument.GetLineLength(int line) => GetLineText(line).Length;
+
+    /// <summary>A fresh buffer with the same text; colours are not carried over.</summary>
+    SystemVerilogCore.Documents.IVerilogTextDocument
+        SystemVerilogCore.Documents.IVerilogTextDocument.CreateSnapshot() =>
+        new InMemoryCodeDocument(_text);
+
+    SystemVerilogCore.Documents.IVerilogDocumentFile?
+        SystemVerilogCore.Documents.IVerilogTextDocument.File => null;
 
     public char GetCharAt(int index) => index < 0 || index >= _text.Length ? '\0' : _text[index];
 

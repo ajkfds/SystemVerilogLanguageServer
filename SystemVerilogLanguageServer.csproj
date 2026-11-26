@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -26,6 +26,16 @@
          still empties the folder first and prunes the per-platform runtimes. -->
     <CopyOutputSymbolsToPublishDirectory>false</CopyOutputSymbolsToPublishDirectory>
   </PropertyGroup>
+
+  <!-- NOTE: an untracked copy of this project sits in a nested
+       `SystemVerilogLanguageServer/` folder. The SDK's default globs would
+       compile both, which duplicates every type (384 errors). That copy is not
+       part of this repository, so it is excluded here. -->
+  <ItemGroup>
+    <Compile Remove="SystemVerilogLanguageServer/**" />
+    <None Remove="SystemVerilogLanguageServer/**" />
+    <EmbeddedResource Remove="SystemVerilogLanguageServer/**" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="SystemVerilogLanguageServer.Tests" />

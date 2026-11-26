@@ -3,7 +3,7 @@ using System.Collections.Generic;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
-using pluginVerilog.CoreBridge;
+
 using SystemVerilogCore.Documents;
 
 namespace SystemVerilogLanguageServer.Server;
@@ -21,7 +21,7 @@ namespace SystemVerilogLanguageServer.Server;
 ///
 /// <list type="bullet">
 /// <item><c>rtl/autoConnect</c> returns the rows as data
-/// (<see cref="AutoConnectModel"/>). The client renders them (the VS Code
+/// (<see cref="SystemVerilogCore.AutoConnect.AutoConnectModel"/>). The client renders them (the VS Code
 /// extension uses a webview so the whole port list is visible at once, like
 /// the desktop window).</item>
 /// <item><c>rtl/autoConnectApply</c> takes the chosen connections and returns
@@ -30,9 +30,9 @@ namespace SystemVerilogLanguageServer.Server;
 ///
 /// <para>
 /// Both are non-standard requests (vendor prefix <c>rtl/</c>). The decision of
-/// <b>which signal matches a port</b> stays in the plugin's UI-free
-/// <see cref="AutoConnectAdapter"/>, so the desktop editor and the LSP host
-/// share one implementation.
+/// <b>which signal matches a port</b> stays in the UI-free
+/// <see cref="SystemVerilogCore.AutoConnect.AutoConnectBuilder"/>, so the
+/// desktop editor and the LSP host share one implementation.
 /// </para>
 /// </summary>
 public sealed partial class LspHandler
@@ -52,7 +52,7 @@ public sealed partial class LspHandler
         if (file == null) return new AutoConnectDto { Message = "the file is not known to the server" };
 
         int index = ResolveIndex(file, parameters, "position");
-        AutoConnectModel? model = file.GetAutoConnectModel(index);
+        SystemVerilogCore.AutoConnect.AutoConnectModel? model = file.GetAutoConnectModel(index);
         if (model == null) return new AutoConnectDto { Message = "the file has not been parsed yet" };
 
         AutoConnectDto dto = new AutoConnectDto
@@ -61,7 +61,7 @@ public sealed partial class LspHandler
             InstanceName = model.InstanceName,
             Message = model.Message,
         };
-        foreach (AutoConnectPort port in model.Ports)
+        foreach (SystemVerilogCore.AutoConnect.AutoConnectPort port in model.Ports)
         {
             AutoConnectPortDto row = new AutoConnectPortDto
             {

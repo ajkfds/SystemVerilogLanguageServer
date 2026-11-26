@@ -1782,16 +1782,15 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// rtl/autoConnect support: the auto-connect form for the module
     /// instantiation at <paramref name="index"/> (one row per port with the
     /// signal the editor would connect). The decision of <b>which signal
-    /// matches a port</b> lives in the plugin's UI-free
-    /// <see cref="pluginVerilog.CoreBridge.AutoConnectAdapter"/>; the host only
-    /// renders the rows.
+    /// matches a port</b> lives in the UI-free
+    /// <see cref="SystemVerilogCore.AutoConnect.AutoConnectBuilder"/>; the host
+    /// only renders the rows.
     /// </summary>
-    internal pluginVerilog.CoreBridge.AutoConnectModel? GetAutoConnectModel(int index)
+    internal SystemVerilogCore.AutoConnect.AutoConnectModel? GetAutoConnectModel(int index)
     {
         EnsureBuilt();
         if (_parsedDocument == null) return null;
-        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
-        return pluginVerilog.CoreBridge.AutoConnectAdapter.Build(verilogFile, _parsedDocument, index);
+        return SystemVerilogCore.AutoConnect.AutoConnectBuilder.Build(_parsedDocument, index);
     }
 
     /// <summary>
@@ -1806,9 +1805,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         EnsureBuilt();
         if (_parsedDocument == null) return null;
-        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
-        return pluginVerilog.CoreBridge.AutoConnectAdapter.Apply(
-            verilogFile, _parsedDocument, index, selections, indent);
+        return SystemVerilogCore.AutoConnect.AutoConnectBuilder.Apply(
+            _parsedDocument, index, selections, indent);
     }
 
     /// <summary>

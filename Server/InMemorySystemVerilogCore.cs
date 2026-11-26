@@ -996,7 +996,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         EnsureBuilt();
         if (_parsedDocument?.Root == null) return false;
 
-        foreach (pluginVerilog.Verilog.BuildingBlocks.BuildingBlock block
+        foreach (SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock block
                  in _parsedDocument.Root.BuildingBlocks.Values)
         {
             if (block.GetBuildingBlockInstantiations().Count > 0) return true;
@@ -1282,8 +1282,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         // instantiated module's own source), so the caret lands on the module
         // declaration there. The instantiation statement's position belongs to
         // the parent document, which is no longer the file being opened.
-        pluginVerilog.Verilog.Items.IBuildingBlockInstantiation? inst = GetInstantiatingItem(item);
-        pluginVerilog.Verilog.BuildingBlocks.BuildingBlock? instanced = null;
+        SystemVerilogCore.Verilog.Items.IBuildingBlockInstantiation? inst = GetInstantiatingItem(item);
+        SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock? instanced = null;
         try
         {
             instanced = inst?.GetInstancedBuildingBlock();
@@ -1353,8 +1353,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     private static bool CanExpand(CodeEditor2.Data.Item item)
     {
         // module / interface instance: look at the instantiated building block
-        pluginVerilog.Verilog.Items.IBuildingBlockInstantiation? inst = GetInstantiatingItem(item);
-        pluginVerilog.Verilog.BuildingBlocks.BuildingBlock? instanced = inst?.GetInstancedBuildingBlock();
+        SystemVerilogCore.Verilog.Items.IBuildingBlockInstantiation? inst = GetInstantiatingItem(item);
+        SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock? instanced = inst?.GetInstancedBuildingBlock();
         if (instanced != null)
         {
             return HasResolvableChildInstantiation(instanced);
@@ -1363,10 +1363,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         // imported package / include header (or an instance whose source could
         // not be resolved): fall back to the item's own parse result
         if (item is not pluginVerilog.Data.IVerilogRelatedFile verilogItem) return false;
-        pluginVerilog.Verilog.ParsedDocument? parsed = verilogItem.VerilogParsedDocument;
+        SystemVerilogCore.Verilog.ParsedDocument? parsed = verilogItem.VerilogParsedDocument;
         if (parsed?.Root == null) return false;
 
-        foreach (pluginVerilog.Verilog.BuildingBlocks.BuildingBlock block
+        foreach (SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock block
                  in parsed.Root.BuildingBlocks.Values)
         {
             if (block.GetBuildingBlockInstantiations().Count > 0) return true;
@@ -1388,23 +1388,23 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// undefined module, which the Updater silently skips).
     /// </summary>
     private static bool HasResolvableChildInstantiation(
-        pluginVerilog.Verilog.BuildingBlocks.BuildingBlock block)
+        SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock block)
     {
-        foreach (pluginVerilog.Verilog.Items.IBuildingBlockInstantiation inst
+        foreach (SystemVerilogCore.Verilog.Items.IBuildingBlockInstantiation inst
                  in block.GetBuildingBlockInstantiations())
         {
             // The Updater only creates child items for module / interface
             // instantiations; program / udp / bind instantiations have no
             // navigate-node children.
-            if (inst is not (pluginVerilog.Verilog.Items.ModuleInstantiation
-                             or pluginVerilog.Verilog.Items.InterfaceInstance)) continue;
+            if (inst is not (SystemVerilogCore.Verilog.Items.ModuleInstantiation
+                             or SystemVerilogCore.Verilog.Items.InterfaceInstance)) continue;
 
             if (inst.GetInstancedBuildingBlock() != null) return true;
         }
         return false;
     }
 
-    private static pluginVerilog.Verilog.Items.IBuildingBlockInstantiation? GetInstantiatingItem(
+    private static SystemVerilogCore.Verilog.Items.IBuildingBlockInstantiation? GetInstantiatingItem(
         CodeEditor2.Data.Item item)
     {
         return item switch
@@ -1457,7 +1457,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
                 try
                 {
                     return module.GetParentInstanciatiation()?.GetInstancedBuildingBlock()
-                        is pluginVerilog.Verilog.BuildingBlocks.Interface
+                        is SystemVerilogCore.Verilog.BuildingBlocks.Interface
                         ? "interface"
                         : "module";
                 }
@@ -1502,7 +1502,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         try
         {
-            pluginVerilog.Verilog.ParsedDocument? parsed = file.VerilogParsedDocument;
+            SystemVerilogCore.Verilog.ParsedDocument? parsed = file.VerilogParsedDocument;
             if (parsed != null)
             {
                 if (parsed.ErrorCount > 0) return "error";
@@ -1541,7 +1541,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         if (item is not pluginVerilog.Data.IVerilogRelatedFile file) return null;
         try
         {
-            pluginVerilog.Verilog.ParsedDocument? parsed = file.VerilogParsedDocument;
+            SystemVerilogCore.Verilog.ParsedDocument? parsed = file.VerilogParsedDocument;
             if (parsed == null) return null;
             if (parsed.ErrorCount > 0) return "errorForeground";
             if (parsed.WarningCount > 0) return "editorWarning.foreground";
@@ -1811,7 +1811,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         // The real parser is async but free of UI dependencies; the query
         // path is synchronous, so block here (no dispatcher => no deadlock).
-        pluginVerilog.Verilog.ParsedDocument? parsedDoc = ParseSystemVerilog(text).GetAwaiter().GetResult();
+        SystemVerilogCore.Verilog.ParsedDocument? parsedDoc = ParseSystemVerilog(text).GetAwaiter().GetResult();
         if (parsedDoc == null || parsedDoc.Root == null)
         {
             // fall back to the lightweight parser when the real parser could
@@ -1852,7 +1852,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// VS Code underline only <c>(</c> where the editor marks <c>(  )</c>.
     /// </para>
     /// </remarks>
-    private static IEnumerable<ISystemVerilogDiagnostic> CollectDiagnostics(pluginVerilog.Verilog.ParsedDocument parsedDoc)
+    private static IEnumerable<ISystemVerilogDiagnostic> CollectDiagnostics(SystemVerilogCore.Verilog.ParsedDocument parsedDoc)
     {
         List<ISystemVerilogDiagnostic> result = new();
         // See the note in GetFoldingRanges: the parse result exposes only the
@@ -1861,14 +1861,14 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             parsedDoc.VerilogDocument as CodeEditor2.CodeEditor.CodeDocument;
         // Messages are the parser's own type now (they used to be the editor's
         // base-class Message, which forced a downcast here).
-        foreach (pluginVerilog.Verilog.ParsedDocument.Message message in parsedDoc.Messages)
+        foreach (SystemVerilogCore.Verilog.ParsedDocument.Message message in parsedDoc.Messages)
         {
             SystemVerilogSeverity severity = message.Type switch
             {
-                pluginVerilog.Verilog.ParsedDocument.Message.MessageType.Error => SystemVerilogSeverity.Error,
-                pluginVerilog.Verilog.ParsedDocument.Message.MessageType.Warning => SystemVerilogSeverity.Warning,
-                pluginVerilog.Verilog.ParsedDocument.Message.MessageType.Notice => SystemVerilogSeverity.Information,
-                pluginVerilog.Verilog.ParsedDocument.Message.MessageType.Hint => SystemVerilogSeverity.Hint,
+                SystemVerilogCore.Verilog.ParsedDocument.Message.MessageType.Error => SystemVerilogSeverity.Error,
+                SystemVerilogCore.Verilog.ParsedDocument.Message.MessageType.Warning => SystemVerilogSeverity.Warning,
+                SystemVerilogCore.Verilog.ParsedDocument.Message.MessageType.Notice => SystemVerilogSeverity.Information,
+                SystemVerilogCore.Verilog.ParsedDocument.Message.MessageType.Hint => SystemVerilogSeverity.Hint,
                 _ => SystemVerilogSeverity.Error,
             };
             string code = pluginVerilog.CoreBridge.DiagnosticCodeMap.FromMessage(message.Text);
@@ -1937,14 +1937,14 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         public SystemVerilogRange Range { get; }
     }
 
-    private pluginVerilog.Verilog.ParsedDocument? _parsedDocument;
+    private SystemVerilogCore.Verilog.ParsedDocument? _parsedDocument;
 
     /// <summary>
     /// The real parser's result for this file (null until it has been parsed).
     /// Exposed so the LSP handlers can walk the parse tree (e.g. the
     /// auto-connect form needs the instantiation's source range).
     /// </summary>
-    internal pluginVerilog.Verilog.ParsedDocument? ParsedDocument
+    internal SystemVerilogCore.Verilog.ParsedDocument? ParsedDocument
     {
         get
         {
@@ -1956,7 +1956,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// <summary>
     /// Drives the plugin ParseEngine on an in-memory VerilogFile.
     /// </summary>
-    private System.Threading.Tasks.Task<pluginVerilog.Verilog.ParsedDocument?> ParseSystemVerilog(string text)
+    private System.Threading.Tasks.Task<SystemVerilogCore.Verilog.ParsedDocument?> ParseSystemVerilog(string text)
     {
         // create / reuse a plugin-side VerilogFile for this in-memory file
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
@@ -1979,7 +1979,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         public string? ParentUri { get; set; }
         public required string ModuleName { get; set; }
-        public required Dictionary<string, pluginVerilog.Verilog.Expressions.Expression> ParameterOverrides { get; set; }
+        public required Dictionary<string, SystemVerilogCore.Verilog.Expressions.Expression> ParameterOverrides { get; set; }
     }
 
     /// <summary>
@@ -2084,7 +2084,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     private bool ParseAndApplyInstance(
         string? parentUri,
         string moduleName,
-        Dictionary<string, pluginVerilog.Verilog.Expressions.Expression> overrides)
+        Dictionary<string, SystemVerilogCore.Verilog.Expressions.Expression> overrides)
     {
         if (_manualSymbols) return false;
         if (string.IsNullOrEmpty(moduleName)) return false;
@@ -2096,7 +2096,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile() ?? basePluginFile;
         if (pluginFile == null || basePluginFile == null) return false;
 
-        pluginVerilog.Verilog.ParsedDocument? parsed;
+        SystemVerilogCore.Verilog.ParsedDocument? parsed;
         try
         {
             // The document being parsed is THIS file, not the base (parent) file
@@ -2249,11 +2249,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// (module/interface/...) become InMemoryBlocks, data objects / functions
     /// / tasks become declaration elements, WordReferences become references.
     /// </summary>
-    private void BuildSymbolsFromParsedDocument(pluginVerilog.Verilog.ParsedDocument parsedDoc, string text)
+    private void BuildSymbolsFromParsedDocument(SystemVerilogCore.Verilog.ParsedDocument parsedDoc, string text)
     {
-        var blockByBuildingBlock = new Dictionary<pluginVerilog.Verilog.BuildingBlocks.BuildingBlock, InMemoryBlock>();
+        var blockByBuildingBlock = new Dictionary<SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock, InMemoryBlock>();
 
-        void AppendBuildingBlocks(pluginVerilog.Verilog.BuildingBlocks.BuildingBlock bb, InMemoryBlock? parent)
+        void AppendBuildingBlocks(SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock bb, InMemoryBlock? parent)
         {
             if (bb == null || string.IsNullOrEmpty(bb.Name)) return;
 
@@ -2279,12 +2279,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             }
 
             // members declared inside the block
-            foreach (pluginVerilog.Verilog.INamedElement element in bb.NamedElements)
+            foreach (SystemVerilogCore.Verilog.INamedElement element in bb.NamedElements)
             {
                 if (element == null || string.IsNullOrEmpty(element.Name)) continue;
 
                 // nested building blocks are appended recursively (below)
-                if (element is pluginVerilog.Verilog.BuildingBlocks.BuildingBlock nested)
+                if (element is SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock nested)
                 {
                     AppendBuildingBlocks(nested, block);
                     continue;
@@ -2303,12 +2303,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             }
         }
 
-        if (parsedDoc.Root is pluginVerilog.Verilog.BuildingBlocks.BuildingBlock rootBlock)
+        if (parsedDoc.Root is SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock rootBlock)
         {
             // root is a synthetic block; append it without registering itself
-            foreach (pluginVerilog.Verilog.INamedElement element in rootBlock.NamedElements)
+            foreach (SystemVerilogCore.Verilog.INamedElement element in rootBlock.NamedElements)
             {
-                if (element is pluginVerilog.Verilog.BuildingBlocks.BuildingBlock nested)
+                if (element is SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock nested)
                 {
                     AppendBuildingBlocks(nested, null);
                 }
@@ -2316,7 +2316,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         }
 
         // collect references (use / assign sites) reported by the real parser
-        AppendReferences(parsedDoc.Root, new HashSet<pluginVerilog.Verilog.DataObjects.DataObject>());
+        AppendReferences(parsedDoc.Root, new HashSet<SystemVerilogCore.Verilog.DataObjects.DataObject>());
     }
 
     /// <summary>
@@ -2330,26 +2330,26 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// be resolved is skipped rather than guessed.
     /// </para>
     /// </summary>
-    private static string? BuildElementDetail(pluginVerilog.Verilog.INamedElement element)
+    private static string? BuildElementDetail(SystemVerilogCore.Verilog.INamedElement element)
     {
         try
         {
             List<string> lines = new();
 
-            if (element is pluginVerilog.Verilog.DataObjects.Port port)
+            if (element is SystemVerilogCore.Verilog.DataObjects.Port port)
             {
                 string direction = port.Direction switch
                 {
-                    pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Input => "input",
-                    pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Output => "output",
-                    pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Inout => "inout",
-                    pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Ref => "ref",
+                    SystemVerilogCore.Verilog.DataObjects.Port.DirectionEnum.Input => "input",
+                    SystemVerilogCore.Verilog.DataObjects.Port.DirectionEnum.Output => "output",
+                    SystemVerilogCore.Verilog.DataObjects.Port.DirectionEnum.Inout => "inout",
+                    SystemVerilogCore.Verilog.DataObjects.Port.DirectionEnum.Ref => "ref",
                     _ => "",
                 };
                 if (direction.Length > 0) lines.Add("direction: " + direction);
             }
 
-            if (element is pluginVerilog.Verilog.DataObjects.DataObject dataObject)
+            if (element is SystemVerilogCore.Verilog.DataObjects.DataObject dataObject)
             {
                 string? typeName = DescribeDataType(dataObject.DataType);
                 if (typeName != null) lines.Add("type: " + typeName);
@@ -2358,38 +2358,38 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
                 if (bitWidth != null) lines.Add("bit width: " + bitWidth.Value);
             }
 
-            if (element is pluginVerilog.Verilog.Function function)
+            if (element is SystemVerilogCore.Verilog.Function function)
             {
                 List<string> ports = new();
-                foreach (pluginVerilog.Verilog.DataObjects.Port p in function.PortsList)
+                foreach (SystemVerilogCore.Verilog.DataObjects.Port p in function.PortsList)
                 {
                     ports.Add(DescribePort(p));
                 }
                 if (ports.Count > 0) lines.Add("arguments: " + string.Join(", ", ports));
             }
 
-            if (element is pluginVerilog.Verilog.Task_ task)
+            if (element is SystemVerilogCore.Verilog.Task_ task)
             {
                 List<string> ports = new();
-                foreach (pluginVerilog.Verilog.DataObjects.Port p in task.PortsList)
+                foreach (SystemVerilogCore.Verilog.DataObjects.Port p in task.PortsList)
                 {
                     ports.Add(DescribePort(p));
                 }
                 if (ports.Count > 0) lines.Add("arguments: " + string.Join(", ", ports));
             }
 
-            if (element is pluginVerilog.Verilog.IPortNameSpace portNameSpace
+            if (element is SystemVerilogCore.Verilog.IPortNameSpace portNameSpace
                 && portNameSpace.PortsList.Count > 0)
             {
                 List<string> ports = new();
-                foreach (pluginVerilog.Verilog.DataObjects.Port p in portNameSpace.PortsList)
+                foreach (SystemVerilogCore.Verilog.DataObjects.Port p in portNameSpace.PortsList)
                 {
                     ports.Add(DescribePort(p));
                 }
                 lines.Add("ports: " + string.Join(", ", ports));
             }
 
-            if (element is pluginVerilog.Verilog.DataObjects.Constants.Constants constants
+            if (element is SystemVerilogCore.Verilog.DataObjects.Constants.Constants constants
                 && constants.Expression != null)
             {
                 string? value = constants.Expression.CreateString();
@@ -2407,14 +2407,14 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         }
     }
 
-    private static string DescribePort(pluginVerilog.Verilog.DataObjects.Port port)
+    private static string DescribePort(SystemVerilogCore.Verilog.DataObjects.Port port)
     {
         string direction = port.Direction switch
         {
-            pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Input => "input ",
-            pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Output => "output ",
-            pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Inout => "inout ",
-            pluginVerilog.Verilog.DataObjects.Port.DirectionEnum.Ref => "ref ",
+            SystemVerilogCore.Verilog.DataObjects.Port.DirectionEnum.Input => "input ",
+            SystemVerilogCore.Verilog.DataObjects.Port.DirectionEnum.Output => "output ",
+            SystemVerilogCore.Verilog.DataObjects.Port.DirectionEnum.Inout => "inout ",
+            SystemVerilogCore.Verilog.DataObjects.Port.DirectionEnum.Ref => "ref ",
             _ => "",
         };
         string? type = DescribeDataType(port.DataObject?.DataType);
@@ -2422,7 +2422,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     }
 
     private static string? DescribeDataType(
-        pluginVerilog.Verilog.DataObjects.DataTypes.IDataType? dataType)
+        SystemVerilogCore.Verilog.DataObjects.DataTypes.IDataType? dataType)
     {
         if (dataType == null) return null;
         try
@@ -2443,24 +2443,24 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// UsedReferences / AssignedReferences) as InMemoryElements, so the LSP
     /// references / definition queries work on real parser data.
     /// </summary>
-    private void AppendReferences(pluginVerilog.Verilog.BuildingBlocks.BuildingBlock? block, HashSet<pluginVerilog.Verilog.DataObjects.DataObject> visited)
+    private void AppendReferences(SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock? block, HashSet<SystemVerilogCore.Verilog.DataObjects.DataObject> visited)
     {
         if (block == null) return;
-        foreach (pluginVerilog.Verilog.INamedElement element in block.NamedElements)
+        foreach (SystemVerilogCore.Verilog.INamedElement element in block.NamedElements)
         {
-            if (element is pluginVerilog.Verilog.BuildingBlocks.BuildingBlock nested)
+            if (element is SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock nested)
             {
                 AppendReferences(nested, visited);
                 continue;
             }
-            if (element is pluginVerilog.Verilog.DataObjects.DataObject dataObject)
+            if (element is SystemVerilogCore.Verilog.DataObjects.DataObject dataObject)
             {
                 AppendReferences(dataObject, visited);
             }
         }
     }
 
-    private void AppendReferences(pluginVerilog.Verilog.DataObjects.DataObject dataObject, HashSet<pluginVerilog.Verilog.DataObjects.DataObject> visited)
+    private void AppendReferences(SystemVerilogCore.Verilog.DataObjects.DataObject dataObject, HashSet<SystemVerilogCore.Verilog.DataObjects.DataObject> visited)
     {
         if (dataObject == null || !visited.Add(dataObject)) return;
 
@@ -2477,9 +2477,9 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         // members of struct / class objects carry their own references
         if (dataObject.NamedElements != null)
         {
-            foreach (pluginVerilog.Verilog.INamedElement member in dataObject.NamedElements)
+            foreach (SystemVerilogCore.Verilog.INamedElement member in dataObject.NamedElements)
             {
-                if (member is pluginVerilog.Verilog.DataObjects.DataObject memberDataObject)
+                if (member is SystemVerilogCore.Verilog.DataObjects.DataObject memberDataObject)
                 {
                     AppendReferences(memberDataObject, visited);
                 }
@@ -2487,10 +2487,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         }
     }
 
-    private void AppendReferenceList(string name, List<pluginVerilog.Verilog.WordReference>? references)
+    private void AppendReferenceList(string name, List<SystemVerilogCore.Verilog.WordReference>? references)
     {
         if (references == null) return;
-        foreach (pluginVerilog.Verilog.WordReference reference in references)
+        foreach (SystemVerilogCore.Verilog.WordReference reference in references)
         {
             if (reference == null || reference.Length <= 0) continue;
             RegisterReference(name, reference.Index, reference.Length, isDeclaration: false);
@@ -2538,7 +2538,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         {
             int tokenIndex = index;
             string sectionName = "";
-            pluginVerilog.Verilog.WordPointer.FetchNext(
+            SystemVerilogCore.Verilog.WordPointer.FetchNext(
                 doc, ref tokenIndex, out int length, out _, out _, ref sectionName);
             // FetchNext skips leading blanks; the caller always passes a token
             // start, so tokenIndex stays put and length is the token width.
@@ -2570,31 +2570,31 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         _ => SystemVerilogNamedElementKind.Unknown,
     };
 
-    private static SystemVerilogNamedElementKind MapNamedElementType(pluginVerilog.Verilog.INamedElement element)
+    private static SystemVerilogNamedElementKind MapNamedElementType(SystemVerilogCore.Verilog.INamedElement element)
     {
-        if (element is pluginVerilog.Verilog.DataObjects.Nets.Net) return SystemVerilogNamedElementKind.Net;
-        if (element is pluginVerilog.Verilog.DataObjects.Port) return SystemVerilogNamedElementKind.Port;
-        if (element is pluginVerilog.Verilog.DataObjects.Constants.Parameter) return SystemVerilogNamedElementKind.Parameter;
-        if (element is pluginVerilog.Verilog.DataObjects.Constants.Localparam) return SystemVerilogNamedElementKind.LocalParameter;
-        if (element is pluginVerilog.Verilog.DataObjects.Typedef) return SystemVerilogNamedElementKind.Typedef;
-        if (element is pluginVerilog.Verilog.Function) return SystemVerilogNamedElementKind.Function;
-        if (element is pluginVerilog.Verilog.Task_) return SystemVerilogNamedElementKind.Task;
-        if (element is pluginVerilog.Verilog.BuildingBlocks.Module) return SystemVerilogNamedElementKind.Module;
-        if (element is pluginVerilog.Verilog.BuildingBlocks.Interface) return SystemVerilogNamedElementKind.Interface;
-        if (element is pluginVerilog.Verilog.BuildingBlocks.Package) return SystemVerilogNamedElementKind.Package;
-        if (element is pluginVerilog.Verilog.BuildingBlocks.Class) return SystemVerilogNamedElementKind.Class;
+        if (element is SystemVerilogCore.Verilog.DataObjects.Nets.Net) return SystemVerilogNamedElementKind.Net;
+        if (element is SystemVerilogCore.Verilog.DataObjects.Port) return SystemVerilogNamedElementKind.Port;
+        if (element is SystemVerilogCore.Verilog.DataObjects.Constants.Parameter) return SystemVerilogNamedElementKind.Parameter;
+        if (element is SystemVerilogCore.Verilog.DataObjects.Constants.Localparam) return SystemVerilogNamedElementKind.LocalParameter;
+        if (element is SystemVerilogCore.Verilog.DataObjects.Typedef) return SystemVerilogNamedElementKind.Typedef;
+        if (element is SystemVerilogCore.Verilog.Function) return SystemVerilogNamedElementKind.Function;
+        if (element is SystemVerilogCore.Verilog.Task_) return SystemVerilogNamedElementKind.Task;
+        if (element is SystemVerilogCore.Verilog.BuildingBlocks.Module) return SystemVerilogNamedElementKind.Module;
+        if (element is SystemVerilogCore.Verilog.BuildingBlocks.Interface) return SystemVerilogNamedElementKind.Interface;
+        if (element is SystemVerilogCore.Verilog.BuildingBlocks.Package) return SystemVerilogNamedElementKind.Package;
+        if (element is SystemVerilogCore.Verilog.BuildingBlocks.Class) return SystemVerilogNamedElementKind.Class;
         return SystemVerilogNamedElementKind.Variable;
     }
 
-    private static SystemVerilogBuildingBlockKind MapBuildingBlockKind(pluginVerilog.Verilog.BuildingBlocks.BuildingBlock bb) => bb switch
+    private static SystemVerilogBuildingBlockKind MapBuildingBlockKind(SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock bb) => bb switch
     {
-        pluginVerilog.Verilog.BuildingBlocks.Module => SystemVerilogBuildingBlockKind.Module,
-        pluginVerilog.Verilog.BuildingBlocks.Interface => SystemVerilogBuildingBlockKind.Interface,
-        pluginVerilog.Verilog.BuildingBlocks.Package => SystemVerilogBuildingBlockKind.Package,
-        pluginVerilog.Verilog.BuildingBlocks.Program => SystemVerilogBuildingBlockKind.Program,
-        pluginVerilog.Verilog.BuildingBlocks.Checker => SystemVerilogBuildingBlockKind.Checker,
-        pluginVerilog.Verilog.BuildingBlocks.Primitive => SystemVerilogBuildingBlockKind.Primitive,
-        pluginVerilog.Verilog.BuildingBlocks.Class => SystemVerilogBuildingBlockKind.Class,
+        SystemVerilogCore.Verilog.BuildingBlocks.Module => SystemVerilogBuildingBlockKind.Module,
+        SystemVerilogCore.Verilog.BuildingBlocks.Interface => SystemVerilogBuildingBlockKind.Interface,
+        SystemVerilogCore.Verilog.BuildingBlocks.Package => SystemVerilogBuildingBlockKind.Package,
+        SystemVerilogCore.Verilog.BuildingBlocks.Program => SystemVerilogBuildingBlockKind.Program,
+        SystemVerilogCore.Verilog.BuildingBlocks.Checker => SystemVerilogBuildingBlockKind.Checker,
+        SystemVerilogCore.Verilog.BuildingBlocks.Primitive => SystemVerilogBuildingBlockKind.Primitive,
+        SystemVerilogCore.Verilog.BuildingBlocks.Class => SystemVerilogBuildingBlockKind.Class,
         _ => SystemVerilogBuildingBlockKind.Unknown,
     };
 
@@ -2962,7 +2962,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         try
         {
-            pluginVerilog.Verilog.ParsedDocument? parsed = _parsedDocument;
+            SystemVerilogCore.Verilog.ParsedDocument? parsed = _parsedDocument;
             if (parsed == null) return null;
 
             CodeEditor2.CodeEditor.CodeDrawStyle baseDrawStyle = new CodeEditor2.CodeEditor.CodeDrawStyle();
@@ -3184,7 +3184,7 @@ internal sealed class InMemoryElement : ISystemVerilogNamedElement
     /// elements the lightweight scanner produced and for reference sites.
     /// </para>
     /// </summary>
-    internal pluginVerilog.Verilog.INamedElement? Source { get; init; }
+    internal SystemVerilogCore.Verilog.INamedElement? Source { get; init; }
 
     public SystemVerilogRange? DefinitionRange => Range;
 

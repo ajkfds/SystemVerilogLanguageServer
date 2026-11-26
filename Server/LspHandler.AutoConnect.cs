@@ -146,19 +146,19 @@ public sealed partial class LspHandler
     {
         start = 0;
         end = 0;
-        pluginVerilog.Verilog.ParsedDocument? parsed = file.ParsedDocument;
+        SystemVerilogCore.Verilog.ParsedDocument? parsed = file.ParsedDocument;
         if (parsed?.Root == null) return false;
 
-        pluginVerilog.Verilog.BuildingBlocks.BuildingBlock? enclosing = parsed.GetBuildingBlockAt(index);
+        SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock? enclosing = parsed.GetBuildingBlockAt(index);
         if (enclosing == null) return false;
 
-        pluginVerilog.Verilog.IndexReference iref =
-            pluginVerilog.Verilog.IndexReference.Create(parsed, null!, index);
+        SystemVerilogCore.Verilog.IndexReference iref =
+            SystemVerilogCore.Verilog.IndexReference.Create(parsed, null!, index);
 
-        foreach (pluginVerilog.Verilog.Items.IBuildingBlockInstantiation instance
+        foreach (SystemVerilogCore.Verilog.Items.IBuildingBlockInstantiation instance
                  in enclosing.GetBuildingBlockInstantiations())
         {
-            if (instance is not pluginVerilog.Verilog.Items.ModuleInstantiation) continue;
+            if (instance is not SystemVerilogCore.Verilog.Items.ModuleInstantiation) continue;
             if (iref.IsSmallerThan(instance.BeginIndexReference)) continue;
             if (instance.LastIndexReference == null) continue;
             if (iref.IsGreaterThan(instance.LastIndexReference)) continue;

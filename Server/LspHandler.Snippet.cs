@@ -58,13 +58,13 @@ public sealed partial class LspHandler
         int selectionStart = ResolveIndex(file, parameters, "selection", "start");
         int selectionEnd = ResolveIndex(file, parameters, "selection", "end");
 
-        pluginVerilog.CoreBridge.SnippetAdapter.SnippetResult? result =
+        SystemVerilogCore.Snippets.SnippetProvider.SnippetResult? result =
             file.GetSnippets(index, kind, argument, selectionStart, selectionEnd);
         if (result == null) return new SnippetResultDto { Message = "the file has not been parsed yet" };
 
         SnippetResultDto dto = new SnippetResultDto { Message = result.Message };
         dto.Candidates.AddRange(result.Candidates);
-        foreach (pluginVerilog.CoreBridge.SnippetAdapter.SnippetEntry entry in result.Snippets)
+        foreach (SystemVerilogCore.Snippets.SnippetProvider.SnippetEntry entry in result.Snippets)
         {
             SnippetDto snippet = new SnippetDto
             {
@@ -76,7 +76,7 @@ public sealed partial class LspHandler
                 SnippetText = entry.SnippetText,
                 PlainText = entry.PlainText,
             };
-            foreach (pluginVerilog.CoreBridge.SnippetField field in entry.Fields)
+            foreach (SystemVerilogCore.Snippets.SnippetField field in entry.Fields)
             {
                 snippet.Fields.Add(new SnippetFieldDto
                 {

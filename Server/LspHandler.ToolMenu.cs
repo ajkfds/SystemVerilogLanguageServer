@@ -45,7 +45,7 @@ public sealed partial class LspHandler
         int selectionStart = ResolveIndex(file, parameters, "selection", "start");
         int selectionEnd = ResolveIndex(file, parameters, "selection", "end");
 
-        pluginVerilog.CoreBridge.ToolMenuAdapter.ToolMenuResult? result =
+        SystemVerilogCore.Snippets.ToolMenuBuilder.ToolMenuResult? result =
             file.GetToolMenu(index, selectionStart, selectionEnd);
         if (result == null)
         {
@@ -53,7 +53,7 @@ public sealed partial class LspHandler
         }
 
         ToolMenuResultDto dto = new ToolMenuResultDto { Message = result.Message };
-        foreach (pluginVerilog.CoreBridge.ToolMenuAdapter.ToolMenuEntry entry in result.Entries)
+        foreach (SystemVerilogCore.Snippets.ToolMenuBuilder.ToolMenuEntry entry in result.Entries)
         {
             dto.Entries.Add(new ToolMenuEntryDto
             {

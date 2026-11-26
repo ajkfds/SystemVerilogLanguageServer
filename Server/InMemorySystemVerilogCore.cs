@@ -1745,7 +1745,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// <c>memory/vscode_extension_debugging.md</c>.
     /// </para>
     /// </summary>
-    internal pluginVerilog.CoreBridge.SnippetAdapter.SnippetResult? GetSnippets(
+    internal SystemVerilogCore.Snippets.SnippetProvider.SnippetResult? GetSnippets(
         int index,
         string name,
         string? argument,
@@ -1755,17 +1755,18 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         EnsureBuilt();
         if (_parsedDocument == null) return null;
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
-        return pluginVerilog.CoreBridge.SnippetAdapter.GetSnippets(
+        return SystemVerilogCore.Snippets.SnippetProvider.GetSnippets(
             verilogFile, _parsedDocument, index, name, argument, selectionStart, selectionEnd);
     }
 
     /// <summary>
     /// rtl/toolMenu support: the tool menu (the desktop editor's Shift+Space
     /// list) as data, with each row's availability decided by
-    /// <c>CoreBridge.ToolMenuAdapter</c>. The catalog itself lives in the plugin
-    /// so the editor and the extension never drift apart.
+    /// <c>SystemVerilogCore.Snippets.ToolMenuBuilder</c>. The catalog itself
+    /// lives in the same assembly, so the editor and the extension never drift
+    /// apart.
     /// </summary>
-    internal pluginVerilog.CoreBridge.ToolMenuAdapter.ToolMenuResult? GetToolMenu(
+    internal SystemVerilogCore.Snippets.ToolMenuBuilder.ToolMenuResult? GetToolMenu(
         int index,
         int selectionStart,
         int selectionEnd)
@@ -1773,7 +1774,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         EnsureBuilt();
         if (_parsedDocument == null) return null;
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
-        return pluginVerilog.CoreBridge.ToolMenuAdapter.Build(
+        return SystemVerilogCore.Snippets.ToolMenuBuilder.Build(
             verilogFile, _parsedDocument, index, selectionStart, selectionEnd);
     }
 

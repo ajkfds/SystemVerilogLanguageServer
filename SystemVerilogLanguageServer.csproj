@@ -42,7 +42,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="AvaloniaUI.DiagnosticsSupport" Version="2.2.3" />
+    <!-- NOTE: AvaloniaUI.DiagnosticsSupport used to be referenced here. This
+         assembly names no Avalonia type (the palette is read through
+         VerilogColorPalette, which is plain #RRGGBB strings), so the package
+         only pulled Avalonia into the bundled server. The plugin reference below
+         still brings the editor stack in transitively - that is what remains. -->
     <PackageReference Include="System.Text.Json" Version="11.0.0" />
   </ItemGroup>
 

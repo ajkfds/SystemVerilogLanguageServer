@@ -110,7 +110,7 @@ public sealed partial class LspHandler
         };
     }
 
-    /// <summary>Formats a colour as <c>#RRGGBB</c> (VS Code settings format).</summary>
-    private static string ToHex(Avalonia.Media.Color color) =>
-        $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+    // NOTE: a ToHex(Avalonia.Media.Color) helper used to live here. The palette
+    // is read through VerilogColorPalette (plain #RRGGBB strings) now, so it had
+    // no caller - and it was the only Avalonia type this assembly named.
 }

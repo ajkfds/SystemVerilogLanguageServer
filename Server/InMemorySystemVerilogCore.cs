@@ -1414,6 +1414,18 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         }
     }
 
+    /// <summary>
+    /// Runs the editor's Updater on <paramref name="item"/> and returns its
+    /// (now populated) children.
+    ///
+    /// <para>
+    /// The Updater applies <see cref="VerilogTreeBuilder"/>'s children to the
+    /// editor item tree, so this is the item-tree view of the same rules the
+    /// hierarchy listing walks. Used by the click path, which resolves an instance
+    /// path through the plugin items (they carry the parameter overrides and the
+    /// instantiating reference).
+    /// </para>
+    /// </summary>
     private List<CodeEditor2.Data.Item> GetUpdatedChildren(CodeEditor2.Data.Item item)
     {
         if (item is not pluginVerilog.Data.IVerilogRelatedFile verilogItem)
@@ -1909,12 +1921,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// (<c>Data.Item.Items</c>) reflects the current parse result.
     ///
     /// <para>
-    /// Requests that walk the hierarchy through the plugin data model - the tree
-    /// expansion and the node menu's simulation setup - read
-    /// <c>file.Items</c> to find the instantiated building blocks. That
-    /// collection is only populated by <c>VerilogCommon.Updater.UpdateAsync</c>
-    /// (the editor runs it when a node is expanded); without it the item tree is
-    /// empty and a collection pass silently reports only the top file.
+    /// Requests that walk the hierarchy through the plugin data model - the node
+    /// menu's simulation setup - read <c>file.Items</c> to find the instantiated
+    /// building blocks. That collection is only populated by the editor's
+    /// <c>VerilogCommon.Updater</c> (which applies
+    /// <see cref="VerilogTreeBuilder"/>'s children to the item tree); without it
+    /// the tree is empty and a collection pass silently reports only the top file.
     /// </para>
     /// </summary>
     internal void PrepareItemTree()
@@ -1922,7 +1934,9 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         EnsureBuilt();
         pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile();
         if (pluginFile == null) return;
-        GetUpdatedChildren(pluginFile);
+        pluginVerilog.Data.VerilogCommon.Updater
+            .UpdateAsync(pluginFile, _hierarchyUpdateSemaphore)
+            .GetAwaiter().GetResult();
     }
 
     /// <summary>
@@ -2310,7 +2324,9 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         if (basePluginFile == null) return false;
 
         // Walk the instance path with the editor's Updater so each level's
-        // Items collection is populated (same as GetHierarchyChildren).
+        // Items collection is populated. The Updater applies
+        // VerilogTreeBuilder's children to the item tree, so this walk follows the
+        // same rules as the hierarchy listing.
         CodeEditor2.Data.Item current = basePluginFile;
         foreach (string segment in instancePath)
         {

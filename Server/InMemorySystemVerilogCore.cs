@@ -148,6 +148,14 @@ internal sealed class InMemoryProject : ISystemVerilogProject,
     private readonly ConcurrentDictionary<string, InMemoryFile> _files = new();
 
     /// <summary>
+    /// The parser settings this host presents (the plugin's, with the
+    /// instance-item hook answered locally). Cached so the same instance is
+    /// handed out: the parse compares nothing on identity, but the name spaces
+    /// inside are the cross-file symbol tables.
+    /// </summary>
+    private InMemoryParserSettings? parserSettings;
+
+    /// <summary>
     /// Snapshot of the registered files, used by the item-tree adapter.
     /// </summary>
     internal IReadOnlyCollection<InMemoryFile> FilesInternal =>
@@ -192,9 +200,12 @@ internal sealed class InMemoryProject : ISystemVerilogProject,
             // must not assume which plugin owns the settings.
             foreach (CodeEditor2.Data.ProjectProperty property in PluginProject.ProjectProperties.Values)
             {
-                if (property is SystemVerilogCore.Projects.IVerilogProjectSettings settings)
+                if (property is SystemVerilogCore.Verilog.IVerilogParserSettings settings)
                 {
-                    return settings;
+                    // Wrapped so the parser's instance-item hook returns null:
+                    // this host has no item tree, and the plugin's implementation
+                    // would try to build an editor item (see the wrapper).
+                    return parserSettings ??= new InMemoryParserSettings(settings);
                 }
             }
             return null;

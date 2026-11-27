@@ -1048,8 +1048,13 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         List<HierarchyNodeDescriptor> result = new();
         if (_parsedDocument?.Root == null) return result;
 
-        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile();
-        if (pluginFile == null) return result;
+        // The root node only needs this file's identity, which the in-memory
+        // file already answers (the plugin item would give the same values -
+        // RegisterPluginItem keys the tree by this relative path). Asking for
+        // the plugin item here would tie the listing to the editor assembly for
+        // two strings.
+        string rootName = System.IO.Path.GetFileName(AbsolutePath ?? Id) ?? Id;
+        string rootRelativePath = ProjectOwner?.GetProjectRelativePath(AbsolutePath) ?? Id;
 
         // The tree's CONTENT comes from SystemVerilogCore's builder, which holds
         // the rules (one building block per file vs several, include / package
@@ -1064,8 +1069,8 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         InMemoryTreeNode root = new()
         {
             Kind = SystemVerilogCore.Tree.VerilogTreeNodeKind.File,
-            Name = pluginFile.Name,
-            RelativePath = pluginFile.RelativePath,
+            Name = rootName,
+            RelativePath = rootRelativePath,
             ParsedResult = _parsedDocument,
             SourceFile = this,
         };

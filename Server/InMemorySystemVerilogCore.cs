@@ -1202,17 +1202,34 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     }
 
     /// <summary>
-    /// Children of the node addressed by <paramref name="nodePath"/> (an empty
-    /// path means the file's first level), produced by the editor's own
-    /// NavigatePanel update code
-    /// (<see cref="pluginVerilog.Data.VerilogCommon.Updater"/>) rather than a
-    /// re-implementation. The editor builds the tree from the plugin item's
-    /// <c>Items</c> collection, so the LSP view and the editor's NavigateView
-    /// stay identical by construction (same building-block rules, same
-    /// instance-array handling, same include / imported-package children).
+    /// The root node of this file's instance tree.
     ///
     /// <para>
-    /// Like the editor, expansion is lazy: the Updater is run on the item being
+    /// The click path walks the same tree the listing shows, so both start here
+    /// instead of from the editor's item tree. Identity is taken from this
+    /// in-memory file (the plugin item would give the same values - the item
+    /// tree is keyed by this relative path).
+    /// </para>
+    /// </summary>
+    internal InMemoryTreeNode CreateTreeNode() => new()
+    {
+        Kind = SystemVerilogCore.Tree.VerilogTreeNodeKind.File,
+        Name = System.IO.Path.GetFileName(AbsolutePath ?? Id) ?? Id,
+        RelativePath = ProjectOwner?.GetProjectRelativePath(AbsolutePath) ?? Id,
+        ParsedResult = _parsedDocument,
+        SourceFile = this,
+    };
+
+    /// <summary>
+    /// Children of the node addressed by <paramref name="nodePath"/> (an empty
+    /// path means the file's first level), produced by the UI-free tree builder
+    /// (<see cref="VerilogTreeBuilder"/>) - the same rules the editor's
+    /// NavigatePanel applies, so the LSP view and the editor cannot drift apart
+    /// (same building-block rules, same instance-array handling, same include /
+    /// imported-package children).
+    ///
+    /// <para>
+    /// Like the editor, expansion is lazy: the builder is run for the node being
     /// expanded (the file itself for the first level, the instance for a deeper
     /// level), which is exactly what the editor does when a node is expanded.
     /// Running it for the whole tree up front would parse every instantiated
@@ -1605,47 +1622,6 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         {
             if (file is InMemoryFile mem) mem.EnsureBuiltForResolve();
         }
-    }
-
-    /// <summary>
-    /// Runs the editor's Updater on <paramref name="item"/> and returns its
-    /// (now populated) children.
-    ///
-    /// <para>
-    /// The Updater applies <see cref="VerilogTreeBuilder"/>'s children to the
-    /// editor item tree, so this is the item-tree view of the same rules the
-    /// hierarchy listing walks. Used by the click path, which resolves an instance
-    /// path through the plugin items (they carry the parameter overrides and the
-    /// instantiating reference).
-    /// </para>
-    /// </summary>
-    private List<CodeEditor2.Data.Item> GetUpdatedChildren(CodeEditor2.Data.Item item)
-    {
-        // The Updater is the editor's item-tree builder (it applies
-        // VerilogTreeBuilder's children), so this path is the one place the
-        // language server still needs the editor's data layer: the tree is a
-        // host structure, not something the UI-free builder can populate.
-        if (item is not SystemVerilogCore.Documents.IVerilogSourceFile verilogItem)
-        {
-            return item.Items.GetSnapShot();
-        }
-
-        try
-        {
-            EnsureWorkspaceBuilt();
-            EnsureInstanceParsed(verilogItem);
-            if (verilogItem is pluginVerilog.Data.IVerilogRelatedFile editorItem)
-            {
-                pluginVerilog.Data.VerilogCommon.Updater
-                    .UpdateAsync(editorItem, _hierarchyUpdateSemaphore)
-                    .GetAwaiter().GetResult();
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"rtl/hierarchy: Updater failed for {item.Name}: {ex.Message}");
-        }
-        return item.Items.GetSnapShot();
     }
 
     /// <summary>
@@ -2544,18 +2520,19 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         // immediate parent (mod2.v, which does not declare "aaabb") fails and
         // the click silently degraded to a plain file parse - the parameter
         // overrides were then ignored, which is the reported symptom.
-        pluginVerilog.Data.VerilogFile? basePluginFile = GetPluginFileForUri(parentUri);
-        if (basePluginFile == null) return false;
+        InMemoryFile? baseFile = GetFileForUri(parentUri);
+        if (baseFile == null) return false;
 
-        // Walk the instance path with the editor's Updater so each level's
-        // Items collection is populated. The Updater applies
-        // VerilogTreeBuilder's children to the item tree, so this walk follows the
-        // same rules as the hierarchy listing.
-        CodeEditor2.Data.Item current = basePluginFile;
+        // Walk the same tree the listing shows. This used to go through the
+        // editor's Updater so each level's Items collection was populated; the
+        // builder produces the identical children (it IS the rule the Updater
+        // applies), and using it here means the click path no longer needs the
+        // editor item tree at all.
+        IVerilogTreeNode current = baseFile.CreateTreeNode();
         foreach (string segment in instancePath)
         {
-            CodeEditor2.Data.Item? next = null;
-            foreach (CodeEditor2.Data.Item candidate in GetUpdatedChildren(current))
+            IVerilogTreeNode? next = null;
+            foreach (IVerilogTreeNode candidate in GetTreeNodeChildren(current))
             {
                 if (string.Equals(candidate.Name, segment, StringComparison.Ordinal))
                 {
@@ -2568,19 +2545,25 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         }
 
         // The target must be an instance (module / interface): only those carry
-        // parameter overrides and a target building-block name. The node
-        // contract answers both, so no editor node type is named here.
-        if (current is SystemVerilogCore.Documents.IVerilogHierarchyNode node)
+        // parameter overrides and a target building-block name.
+        if (current is InMemoryTreeNode target
+            && target.InstantiatingItem is { } instantiating
+            && target.Kind is SystemVerilogCore.Tree.VerilogTreeNodeKind.ModuleInstance
+                or SystemVerilogCore.Tree.VerilogTreeNodeKind.InterfaceInstance)
         {
-            switch (node.HierarchyNodeKind)
-            {
-                case SystemVerilogCore.Documents.VerilogHierarchyNodeKind.ModuleInstance:
-                case SystemVerilogCore.Documents.VerilogHierarchyNodeKind.InterfaceInstance:
-                    return ParseAndApplyInstance(
-                        parentUri, node.HierarchyNodeName, node.HierarchyParameterOverrides);
-            }
+            return ParseAndApplyInstance(
+                parentUri, instantiating.SourceName, instantiating.ParameterOverrides);
         }
         return false;
+    }
+
+    /// <summary>
+    /// The in-memory file a document URI addresses, or null.
+    /// </summary>
+    private InMemoryFile? GetFileForUri(string? uri)
+    {
+        if (string.IsNullOrEmpty(uri)) return null;
+        return ProjectOwner?.FindFile(uri) as InMemoryFile;
     }
 
     /// <summary>

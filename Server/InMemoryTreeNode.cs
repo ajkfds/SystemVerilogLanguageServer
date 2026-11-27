@@ -93,6 +93,20 @@ internal sealed class InMemoryTreeNode : IVerilogTreeNode
     /// </summary>
     public BuildingBlock? InstancedBuildingBlock { get; init; }
 
+    /// <summary>
+    /// The instantiation this node stands for, as the parser's interface.
+    ///
+    /// <para>
+    /// The click path needs the instantiated name and the parameter overrides to
+    /// re-parse the file as that instance. Both instantiations implement this
+    /// interface, so the caller does not have to switch on the node kind or name
+    /// the parser's concrete instantiation types.
+    /// </para>
+    /// </summary>
+    public SystemVerilogCore.Verilog.Items.IBuildingBlockInstantiation? InstantiatingItem =>
+        (SystemVerilogCore.Verilog.Items.IBuildingBlockInstantiation?)ModuleInstantiation
+        ?? InterfaceInstantiation;
+
     /// <summary>Adds a child, replacing any child of the same name.</summary>
     public void AddChild(IVerilogTreeNode child)
     {

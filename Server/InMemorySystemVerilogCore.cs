@@ -2426,17 +2426,16 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // Parse through the UI-free engine, handing it THIS host's document.
         //
-        // The file argument must stay the plugin file, and the reason is the
-        // ITEM TREE, not the name spaces. Everything the parse itself needs is
-        // contract-based (name-space registration, the parse-result and instance
-        // caches, the parameter-overridden lookup), but the hierarchy is built by
-        // the editor's Updater, and every node it creates is an editor item:
-        // `VerilogModuleInstance.Create` resolves the declaring file from the
-        // definition name space and NARROWS it to `IVerilogRelatedFile` to wrap
-        // it in a `TextFile`. Registering this host object made that narrowing
-        // return null, so no instance node was created at all - the click path
-        // then reported "not an instance" and five hierarchy tests failed.
-        // Measured four times with the same result; see memory/state.md (H (19)).
+        // The file argument must stay the plugin file. The hierarchy is
+        // contract-based now (the listing AND the click path walk the UI-free
+        // builder), and 4 of the 5 parameter-override tests pass with this host
+        // as the file - but one does not: the immediate instance parse inside
+        // `ModuleInstantiation.ParseAsync` creates the instance through
+        // `CreateInstanceItem` -> `VerilogModuleInstance.Create`, which wraps the
+        // declaring file in a `TextFile` and therefore needs the editor's file
+        // type. Registering this host object makes that wrap impossible, so the
+        // override is never applied during a plain re-parse of the parent.
+        // See memory/state.md, Stage H (20).
         return SystemVerilogCore.Parsing.ParseEngine.ParseSystemVerilogAsync(
             text, verilogFile, null,
             _codeDocument as SystemVerilogCore.Documents.IVerilogTextDocument);

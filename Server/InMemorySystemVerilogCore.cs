@@ -794,8 +794,108 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     SystemVerilogCore.Projects.IVerilogItem,
     // The parser-facing identity view: a parse records which file a diagnostic
     // came from, and the buffer has to answer that.
-    SystemVerilogCore.Documents.IVerilogDocumentFile
+    SystemVerilogCore.Documents.IVerilogDocumentFile,
+    // The parser-facing source file. The parse only needs the contract, so the
+    // host presents itself as one instead of making every caller fetch the
+    // plugin's VerilogFile (which is what kept six parse / provider call sites
+    // naming the editor assembly).
+    SystemVerilogCore.Documents.IVerilogSourceFile,
+    // The write side of the parse result. The UI-free engine stores what it
+    // parsed through these contracts (the editor fills the same slots while
+    // accepting a parse result); without them the result is discarded and every
+    // reader - hierarchy, completion, snippets, diagnostics - sees nothing.
+    SystemVerilogCore.Documents.IVerilogSourceFileParseCache,
+    SystemVerilogCore.Documents.IVerilogSourceFileInstanceCache
 {
+    // ---- SystemVerilogCore.Documents.IVerilogSourceFileParseCache ----------
+    // Forwards to the plugin-side file: the parse result has to land where the
+    // editor's Updater reads it (see ParseFile).
+
+    void SystemVerilogCore.Documents.IVerilogSourceFileParseCache.SetVerilogParsedResult(
+        SystemVerilogCore.Parsing.IParsedDocument parsedDocument)
+    {
+        if (ParseFile is SystemVerilogCore.Documents.IVerilogSourceFileParseCache cache)
+        {
+            cache.SetVerilogParsedResult(parsedDocument);
+        }
+    }
+
+    void SystemVerilogCore.Documents.IVerilogSourceFileInstanceCache.RegisterInstanceParsedDocument(
+        string instanceKey, SystemVerilogCore.Parsing.IParsedDocument parsedDocument)
+    {
+        if (ParseFile is SystemVerilogCore.Documents.IVerilogSourceFileInstanceCache cache)
+        {
+            cache.RegisterInstanceParsedDocument(instanceKey, parsedDocument);
+        }
+    }
+
+    // ---- SystemVerilogCore.Documents.IVerilogSourceFile --------------------
+    //
+    // The values come from the plugin-side file, because that is where the
+    // parse result and the buffer live: the editor's Updater walks the item
+    // tree and reads *that* object's parse result, so the two must be the same
+    // store. Delegating here keeps this contract behaviourally identical to
+    // handing the plugin file over - it only moves the one place that names
+    // the editor type into this file instead of every call site.
+
+    /// <summary>
+    /// The plugin-side file this host parses with (the registered item when the
+    /// file is in the item tree, otherwise one created on demand).
+    /// </summary>
+    private SystemVerilogCore.Documents.IVerilogSourceFile ParseFile =>
+        _verilogFile ??= CreateVerilogFile();
+
+    SystemVerilogCore.Parsing.IParsedDocument?
+        SystemVerilogCore.Documents.IVerilogSourceFile.GetInstancedParsedDocument(string instanceKey) =>
+        ParseFile.GetInstancedParsedDocument(instanceKey);
+
+    SystemVerilogCore.Parsing.IParsedDocument?
+        SystemVerilogCore.Documents.IVerilogSourceFile.VerilogParsedResult =>
+        ParseFile.VerilogParsedResult;
+
+    SystemVerilogCore.Documents.IVerilogTextDocument?
+        SystemVerilogCore.Documents.IVerilogSourceFile.VerilogTextDocument =>
+        ParseFile.VerilogTextDocument;
+
+    ulong SystemVerilogCore.Documents.IVerilogSourceFile.VerilogTextDocumentVersion =>
+        ParseFile.VerilogTextDocumentVersion;
+
+    SystemVerilogCore.Projects.IVerilogProjectSettings?
+        SystemVerilogCore.Documents.IVerilogSourceFile.ProjectSettings =>
+        ParseFile.ProjectSettings;
+
+    SystemVerilogCore.Projects.IVerilogProject?
+        SystemVerilogCore.Documents.IVerilogSourceFile.VerilogProject =>
+        ParseFile.VerilogProject;
+
+    string SystemVerilogCore.Documents.IVerilogSourceFile.Id => Id;
+
+    string SystemVerilogCore.Documents.IVerilogSourceFile.FileRelativePath =>
+        ProjectOwner?.GetProjectRelativePath(AbsolutePath) ?? Id;
+
+    bool SystemVerilogCore.Documents.IVerilogSourceFile.IsSystemVerilog => IsSystemVerilog;
+
+    /// <summary>
+    /// No children: the language server derives the hierarchy from the parse
+    /// results on demand rather than storing a mutable item tree.
+    /// </summary>
+    SystemVerilogCore.Projects.IVerilogItemList?
+        SystemVerilogCore.Documents.IVerilogSourceFile.ChildItems => null;
+
+    void SystemVerilogCore.Documents.IVerilogSourceFile.PrepareVerilogTextDocument(string text) =>
+        ParseFile.PrepareVerilogTextDocument(text);
+
+    SystemVerilogCore.Parsing.IVerilogDocumentParser?
+        SystemVerilogCore.Documents.IVerilogSourceFile.CreateVerilogDocumentParser(
+            SystemVerilogCore.Parsing.VerilogParseMode parseMode,
+            System.Threading.CancellationToken? token) =>
+        ParseFile.CreateVerilogDocumentParser(parseMode, token);
+
+    System.Threading.Tasks.Task
+        SystemVerilogCore.Documents.IVerilogSourceFile.AcceptVerilogParsedDocumentAsync(
+            SystemVerilogCore.Parsing.IVerilogDocumentParser parser) =>
+        ParseFile.AcceptVerilogParsedDocumentAsync(parser);
+
     string SystemVerilogCore.Documents.IVerilogDocumentFile.Id => Id;
     string SystemVerilogCore.Documents.IVerilogDocumentFile.RelativePath =>
         ProjectOwner?.GetProjectRelativePath(AbsolutePath) ?? Id;
@@ -1203,6 +1303,9 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             ?? node.InterfaceInstantiation?.ParameterOverrides;
         if (string.IsNullOrEmpty(moduleName) || overrides == null) return null;
 
+        // Same reason as ParseSystemVerilog: the instance parse records its
+        // result on the plugin file (which is what the editor reads back), so
+        // the plugin file is the file argument.
         pluginVerilog.Data.VerilogFile? pluginFile = source.GetPluginVerilogFileForParse();
         if (pluginFile == null) return null;
 
@@ -1917,9 +2020,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         EnsureBuilt();
         if (_parsedDocument == null) return null;
-        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        // The provider takes the contract, so this host can present itself
+        // instead of handing over the plugin's file.
+        SystemVerilogCore.Documents.IVerilogSourceFile sourceFile =
+            (SystemVerilogCore.Documents.IVerilogSourceFile)this;
         return SystemVerilogCore.Completion.CompletionProvider.GetCompletionItems(
-            verilogFile, _parsedDocument, index);
+            sourceFile, _parsedDocument, index);
     }
 
     /// <summary>
@@ -1980,9 +2086,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         EnsureBuilt();
         if (_parsedDocument == null) return null;
-        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        SystemVerilogCore.Documents.IVerilogSourceFile sourceFile =
+            (SystemVerilogCore.Documents.IVerilogSourceFile)this;
         return SystemVerilogCore.Completion.SignatureHelpProvider.GetSignatures(
-            verilogFile, _parsedDocument, index);
+            sourceFile, _parsedDocument, index);
     }
 
     /// <summary>
@@ -2039,9 +2146,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         EnsureBuilt();
         if (_parsedDocument == null) return null;
-        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        SystemVerilogCore.Documents.IVerilogSourceFile sourceFile =
+            (SystemVerilogCore.Documents.IVerilogSourceFile)this;
         return SystemVerilogCore.Snippets.SnippetProvider.GetSnippets(
-            verilogFile, _parsedDocument, index, name, argument, selectionStart, selectionEnd);
+            sourceFile, _parsedDocument, index, name, argument, selectionStart, selectionEnd);
     }
 
     /// <summary>
@@ -2058,9 +2166,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         EnsureBuilt();
         if (_parsedDocument == null) return null;
-        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
+        SystemVerilogCore.Documents.IVerilogSourceFile sourceFile =
+            (SystemVerilogCore.Documents.IVerilogSourceFile)this;
         return SystemVerilogCore.Snippets.ToolMenuBuilder.Build(
-            verilogFile, _parsedDocument, index, selectionStart, selectionEnd);
+            sourceFile, _parsedDocument, index, selectionStart, selectionEnd);
     }
 
     /// <summary>
@@ -2255,6 +2364,13 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
 
         // Parse through the UI-free engine, handing it THIS host's document.
+        //
+        // The file argument must be the plugin file, not this in-memory file:
+        // the parse registers the file's building blocks into the project name
+        // spaces, and that registration requires the plugin's
+        // IVerilogNameSpaceFile (FindRootNamedElement). Handing over a
+        // contract-only file silently skipped the registration, so every
+        // module became "unfound module" and the whole hierarchy collapsed.
         return SystemVerilogCore.Parsing.ParseEngine.ParseSystemVerilogAsync(
             text, verilogFile, null,
             _codeDocument as SystemVerilogCore.Documents.IVerilogTextDocument);

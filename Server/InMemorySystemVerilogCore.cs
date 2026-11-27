@@ -2411,17 +2411,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // Parse through the UI-free engine, handing it THIS host's document.
         //
-        // The file argument must stay the plugin file. It is not only about the
-        // name-space CONTRACT (this host implements IVerilogNameSpaceFile, so
-        // registration would succeed either way) - it is about the IDENTITY of
-        // the object that ends up registered: the parse stores the very file it
-        // was given into DefinitionNameSpace / PackageNameSpace / UnitNameSpace,
-        // and the readers of those name spaces still narrow the result to the
-        // plugin's IVerilogRelatedFile (snippet module resolution, definition
-        // lookup, and InstanceTextFile's instance-cache key). Registering this
-        // host object made every one of those lookups miss: eight hierarchy
-        // tests failed with parameter overrides silently reverting to the
-        // declared values. See memory/state.md, Stage H (17).
+        // The file argument must stay the plugin file, and the reason is NOT the
+        // name-space contract (this host implements IVerilogNameSpaceFile, so
+        // registration succeeds either way) - it is the IDENTITY of the object
+        // that ends up registered. The parse stores the very file it was given
+        // into DefinitionNameSpace / PackageNameSpace / UnitNameSpace, and the
+        // readers of those name spaces still narrow the result to the plugin's
+        // IVerilogRelatedFile. Registering this host object made every such
+        // lookup miss: the parameter-override tests then read the DECLARED
+        // parameter values (5 became 8) and eight hierarchy tests failed.
+        // Bisected: reverting only this one argument turns them green again.
+        // See memory/state.md, Stage H (17)/(18).
         return SystemVerilogCore.Parsing.ParseEngine.ParseSystemVerilogAsync(
             text, verilogFile, null,
             _codeDocument as SystemVerilogCore.Documents.IVerilogTextDocument);

@@ -902,8 +902,22 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
     string SystemVerilogCore.Documents.IVerilogSourceFile.Id => Id;
 
+    /// <summary>
+    /// Project-relative path, taken from the plugin-side file rather than
+    /// derived here.
+    ///
+    /// <para>
+    /// This value is part of the instance parse-cache key
+    /// (<c>ParsedDocument.KeyGenerator</c>). The reader builds that key from the
+    /// instance wrapper, whose path is the plugin item's <c>RelativePath</c>; if
+    /// this host derived the path independently the two keys could differ (a
+    /// file outside the workspace root falls back to the document URI) and the
+    /// parameter-overridden result would never be found - the instance click
+    /// then showed the declared parameter values.
+    /// </para>
+    /// </summary>
     string SystemVerilogCore.Documents.IVerilogSourceFile.FileRelativePath =>
-        ProjectOwner?.GetProjectRelativePath(AbsolutePath) ?? Id;
+        ParseFile.FileRelativePath;
 
     bool SystemVerilogCore.Documents.IVerilogSourceFile.IsSystemVerilog => IsSystemVerilog;
 
@@ -2397,16 +2411,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // Parse through the UI-free engine, handing it THIS host's document.
         //
-        // The file argument is the plugin file, not this in-memory file. Name
-        // space registration now works either way (this host implements
-        // IVerilogNameSpaceFile), but the INSTANCE parse results do not: the
-        // editor reads them back through
-        // InstanceTextFile.ParsedDocument -> SourceVerilogFile
-        // .GetInstancedParsedDocument(key), and the key it builds from the
-        // instance wrapper does not match the one the engine derives from this
-        // host's file. Until that key is reconciled (see memory/state.md,
-        // Stage H (17)), parsing against the plugin file keeps the instance
-        // click / parameter-override paths working.
+        // The file argument must stay the plugin file. It is not only about the
+        // name-space CONTRACT (this host implements IVerilogNameSpaceFile, so
+        // registration would succeed either way) - it is about the IDENTITY of
+        // the object that ends up registered: the parse stores the very file it
+        // was given into DefinitionNameSpace / PackageNameSpace / UnitNameSpace,
+        // and the readers of those name spaces still narrow the result to the
+        // plugin's IVerilogRelatedFile (snippet module resolution, definition
+        // lookup, and InstanceTextFile's instance-cache key). Registering this
+        // host object made every one of those lookups miss: eight hierarchy
+        // tests failed with parameter overrides silently reverting to the
+        // declared values. See memory/state.md, Stage H (17).
         return SystemVerilogCore.Parsing.ParseEngine.ParseSystemVerilogAsync(
             text, verilogFile, null,
             _codeDocument as SystemVerilogCore.Documents.IVerilogTextDocument);

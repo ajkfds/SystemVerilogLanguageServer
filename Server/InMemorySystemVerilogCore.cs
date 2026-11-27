@@ -856,6 +856,19 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         }
     }
 
+    /// <summary>
+    /// Records an instance parse result.
+    ///
+    /// <para>
+    /// The write goes to <see cref="ParseFile"/> (the plugin-side file), not to
+    /// this object. The READER is <c>InstanceTextFile.ParsedDocument</c>, which
+    /// asks the plugin source file it wraps for the result - so the entry has to
+    /// live in that file's table. Writing it here put it in a different table and
+    /// the parameter-overridden result was never found: an instance click showed
+    /// the declared parameter values (5 read as 8) and five hierarchy tests
+    /// failed.
+    /// </para>
+    /// </summary>
     void SystemVerilogCore.Documents.IVerilogSourceFileInstanceCache.RegisterInstanceParsedDocument(
         string instanceKey, SystemVerilogCore.Parsing.IParsedDocument parsedDocument)
     {
@@ -908,6 +921,20 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         SystemVerilogCore.Documents.IVerilogSourceFile.ProjectSettings =>
         ParseFile.ProjectSettings;
 
+    /// <summary>
+    /// The project this file belongs to, as the source-file contract.
+    ///
+    /// <para>
+    /// This is the <b>plugin</b> project (the shared stub), not the workspace
+    /// project, and it has to stay that way: the instance parse-cache key starts
+    /// with this project's <c>Name</c> (<c>ParsedDocument.KeyGenerator</c>), and
+    /// the reader (<c>InstanceTextFile</c>) builds its key from its own
+    /// <c>Project</c>, which is that same plugin project. Answering with the
+    /// workspace project here made the two keys differ, so the
+    /// parameter-overridden result was never found and an instance click showed
+    /// the declared parameter values (5 read as 8).
+    /// </para>
+    /// </summary>
     SystemVerilogCore.Projects.IVerilogProject?
         SystemVerilogCore.Documents.IVerilogSourceFile.VerilogProject =>
         ParseFile.VerilogProject;
@@ -2423,13 +2450,13 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // Parse through the UI-free engine, handing it THIS host's document.
         //
-        // The file argument stays the plugin file. Name-space registration and
-        // the parameter-overridden lookup are contract-based now, but the
-        // instance parse CACHE KEY is not: the reader builds it from the
-        // instance wrapper (InstanceTextFile) whose VerilogProject is the
-        // workspace project, while this host's VerilogProject is the shared
-        // parser project stub - the two names differ, so the keys differ and the
-        // override result is never found. Bisected: reverting only this argument
+        // The file argument stays the plugin file. Everything the parse needs is
+        // contract-based now (name-space registration, the instance cache, the
+        // parameter-overridden lookup), but the READER of that cache is
+        // `InstanceTextFile.ParsedDocument`, which asks the plugin source file it
+        // wraps. Registering this host object therefore wrote into a different
+        // table and the override result was never found (5 read as 8, five
+        // hierarchy tests red). Bisected repeatedly: reverting only this argument
         // restores all 1313 tests. See memory/state.md, Stage H (19).
         return SystemVerilogCore.Parsing.ParseEngine.ParseSystemVerilogAsync(
             text, verilogFile, null,

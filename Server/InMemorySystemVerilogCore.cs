@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using SystemVerilogCore;
 using SystemVerilogCore.Diagnostics;
 using SystemVerilogCore.Documents;
+using SystemVerilogCore.Tree;
 
 namespace SystemVerilogLanguageServer.Server;
 
@@ -1050,21 +1051,32 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile();
         if (pluginFile == null) return result;
 
-        // Walk down to the item being expanded, running the editor's Updater on
-        // each level so its Items collection is populated (the editor does the
-        // same lazily when a node is expanded).
+        // The tree's CONTENT comes from SystemVerilogCore's builder, which holds
+        // the rules (one building block per file vs several, include / package
+        // children first, instance arrays, node reuse by instance key). This host
+        // only supplies the nodes, so the editor's NavigatePanel and this view
+        // cannot drift apart.
         //
         // The path is a chain of child NAMES, not indexes: an index would point
         // at a different node as soon as a sibling is added or removed between
         // two requests, which is exactly what the opaque expand token has to
         // survive.
-        CodeEditor2.Data.Item current = pluginFile;
+        InMemoryTreeNode root = new()
+        {
+            Kind = SystemVerilogCore.Tree.VerilogTreeNodeKind.File,
+            Name = pluginFile.Name,
+            RelativePath = pluginFile.RelativePath,
+            ParsedResult = _parsedDocument,
+            SourceFile = this,
+        };
+
+        IVerilogTreeNode current = root;
         List<string> parentSegments = new();
         foreach (string segment in instancePath)
         {
-            List<CodeEditor2.Data.Item> children = GetUpdatedChildren(current);
-            CodeEditor2.Data.Item? next = null;
-            foreach (CodeEditor2.Data.Item candidate in children)
+            IReadOnlyList<IVerilogTreeNode> children = GetTreeNodeChildren(current);
+            IVerilogTreeNode? next = null;
+            foreach (IVerilogTreeNode candidate in children)
             {
                 if (string.Equals(candidate.Name, segment, StringComparison.Ordinal))
                 {
@@ -1086,15 +1098,254 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         // "aaabb". Both the expand token and the click's instance path are
         // therefore based on THIS file, and the client simply echoes the chain
         // back (see CreateDescriptor -> ExpandUri / ParentUri).
-        foreach (CodeEditor2.Data.Item child in GetUpdatedChildren(current))
+        foreach (IVerilogTreeNode child in GetTreeNodeChildren(current))
         {
-            HierarchyNodeDescriptor descriptor = CreateDescriptor(child);
+            HierarchyNodeDescriptor descriptor = CreateTreeNodeDescriptor(child);
             descriptor.InstancePathSegments.AddRange(parentSegments);
             descriptor.InstancePathSegments.Add(child.Name);
             descriptor.InstancePath = string.Join(".", descriptor.InstancePathSegments);
             result.Add(descriptor);
         }
         return result;
+    }
+
+    /// <summary>
+    /// Runs the UI-free tree builder on <paramref name="node"/> and returns its
+    /// children.
+    ///
+    /// <para>
+    /// Expansion is lazy, like the editor's: the builder runs for the node being
+    /// expanded (the file for the first level, the instance for a deeper one).
+    /// Building the whole tree up front would parse every instantiated module
+    /// eagerly.
+    /// </para>
+    /// </summary>
+    private IReadOnlyList<IVerilogTreeNode> GetTreeNodeChildren(IVerilogTreeNode node)
+    {
+        if (node is not InMemoryTreeNode treeNode) return Array.Empty<IVerilogTreeNode>();
+
+        // Children are cached on the node: the builder is deterministic for a
+        // given parse result, and re-running it per request would re-walk every
+        // instantiation.
+        if (treeNode.Children.Count > 0) return treeNode.Children;
+
+        try
+        {
+            EnsureWorkspaceBuilt();
+
+            // An instance is parsed AS ITSELF (with its parameter overrides)
+            // before its children can be listed: a `generate if` branch depends on
+            // the override, so the file's plain parse cannot answer it.
+            if (treeNode.Kind is SystemVerilogCore.Tree.VerilogTreeNodeKind.ModuleInstance
+                or SystemVerilogCore.Tree.VerilogTreeNodeKind.InterfaceInstance)
+            {
+                EnsureInstanceNodeParsed(treeNode);
+            }
+
+            IReadOnlyList<IVerilogTreeNode> children = VerilogTreeBuilder.BuildChildren(
+                treeNode,
+                new InMemoryTreeNodeFactory(ProjectOwner
+                    ?? throw new InvalidOperationException("no project")),
+                treeNode.BuildingBlockName);
+            treeNode.AddChildren(children);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"rtl/hierarchy: tree build failed for {node.Name}: {ex.Message}");
+        }
+        return treeNode.Children;
+    }
+
+    /// <summary>
+    /// Parses the instance behind <paramref name="node"/> with its parameter
+    /// overrides applied, so its children match what the editor shows.
+    /// </summary>
+    private void EnsureInstanceNodeParsed(InMemoryTreeNode node)
+    {
+        if (node.ParsedResult != null) return;
+
+        // The node carries its file: an in-memory file's relative path is its id
+        // ("mem://top.sv"), which is not a project-relative path, so looking the
+        // file up by path would miss it and the node would expand to nothing.
+        InMemoryFile? source = node.SourceFile;
+        if (source == null) return;
+        source.EnsureBuiltForResolve();
+
+        SystemVerilogCore.Verilog.ParsedDocument? instanced = null;
+        try
+        {
+            instanced = ParseInstanceNode(source, node);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"rtl/hierarchy: instance parse failed for {node.Name}: {ex.Message}");
+        }
+
+        node.SetParsedResult(instanced ?? source.ParsedDocument);
+    }
+
+    /// <summary>
+    /// Parses <paramref name="node"/>'s instantiation with its parameter
+    /// overrides applied.
+    /// </summary>
+    private static SystemVerilogCore.Verilog.ParsedDocument? ParseInstanceNode(
+        InMemoryFile source, InMemoryTreeNode node)
+    {
+        string? moduleName = node.ModuleInstantiation?.SourceName
+            ?? node.InterfaceInstantiation?.SourceName;
+        Dictionary<string, SystemVerilogCore.Verilog.Expressions.Expression>? overrides =
+            node.ModuleInstantiation?.ParameterOverrides
+            ?? node.InterfaceInstantiation?.ParameterOverrides;
+        if (string.IsNullOrEmpty(moduleName) || overrides == null) return null;
+
+        pluginVerilog.Data.VerilogFile? pluginFile = source.GetPluginVerilogFileForParse();
+        if (pluginFile == null) return null;
+
+        return SystemVerilogCore.Parsing.ParseEngine.ParseInstanceAsync(
+            source.CodeDocumentText,
+            pluginFile,
+            moduleName,
+            overrides,
+            null,
+            source.CodeDocument as SystemVerilogCore.Documents.IVerilogTextDocument)
+            .GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// Builds the client-facing descriptor for a tree node.
+    /// </summary>
+    private HierarchyNodeDescriptor CreateTreeNodeDescriptor(IVerilogTreeNode node)
+    {
+        HierarchyNodeDescriptor descriptor = new()
+        {
+            Label = node.Name,
+            Detail = DescribeTreeNode(node),
+            // Clicking the node opens the node's OWN file, exactly like the
+            // editor's NavigatePanel: selecting a module instance shows the
+            // instantiated module's source, not the file the instantiation is
+            // written in.
+            Uri = ResolveTreeNodeUri(node),
+            // Expanding has to look the node up in the tree that was walked to
+            // produce it, and that walk started at THIS file (the node's
+            // InstancePathSegments are a chain from this file's root), so the base
+            // document is this file - not the immediate parent.
+            ExpandUri = Id,
+            ParentUri = Id,
+            HasChildren = HasTreeNodeChildren(node),
+            Icon = ResolveTreeNodeIcon(node),
+        };
+
+        // Click-to-jump position: the declaration of the instantiated block in the
+        // file the node opens (the instantiation statement's position belongs to
+        // the parent document, which is no longer the file being opened).
+        if (node is InMemoryTreeNode treeNode && treeNode.InstancedBuildingBlock?.NameReference != null)
+        {
+            SystemVerilogCore.Documents.IVerilogTextDocument? instancedDocument =
+                (treeNode.InstancedBuildingBlock.File as CodeEditor2.Data.TextFile)?.CodeDocument;
+            if (instancedDocument != null)
+            {
+                int index = treeNode.InstancedBuildingBlock.NameReference.Index;
+                descriptor.StartLine = GetLineOfIndex(instancedDocument, index);
+                descriptor.StartCharacter = GetCharacterOfIndex(instancedDocument, index);
+            }
+        }
+
+        // absolute paths for the file operations (Add / Delete / Open in
+        // Explorer). The node's RelativePath is workspace-relative, so resolve it
+        // against the workspace roots here instead of in the client.
+        string? fsPath = ResolveTreeNodeAbsolutePath(node);
+        descriptor.FsPath = fsPath;
+        if (!string.IsNullOrEmpty(fsPath))
+        {
+            descriptor.DirPath = Path.GetDirectoryName(fsPath);
+        }
+        return descriptor;
+    }
+
+    /// <summary>
+    /// Whether expanding <paramref name="node"/> would show children, so the
+    /// client can draw the arrow before the children are requested.
+    /// </summary>
+    private static bool HasTreeNodeChildren(IVerilogTreeNode node)
+    {
+        if (node is not InMemoryTreeNode treeNode) return false;
+
+        if (treeNode.Kind == SystemVerilogCore.Tree.VerilogTreeNodeKind.File)
+        {
+            SystemVerilogCore.Verilog.ParsedDocument? parsed =
+                treeNode.ParsedResult as SystemVerilogCore.Verilog.ParsedDocument;
+            if (parsed?.Root == null) return false;
+            foreach (SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock block
+                     in parsed.Root.BuildingBlocks.Values)
+            {
+                if (block.GetBuildingBlockInstantiations().Count > 0) return true;
+            }
+            return false;
+        }
+
+        if (treeNode.Kind is SystemVerilogCore.Tree.VerilogTreeNodeKind.ImportedPackage
+            or SystemVerilogCore.Tree.VerilogTreeNodeKind.Header)
+        {
+            return false;
+        }
+
+        // An instance is expandable when the block it instantiates declares a
+        // further instantiation that resolves, which is exactly what the builder
+        // will turn into children.
+        if (treeNode.InstancedBuildingBlock is { } instanced)
+        {
+            return HasResolvableChildInstantiation(instanced);
+        }
+        return false;
+    }
+
+    private static string? DescribeTreeNode(IVerilogTreeNode node)
+    {
+        return node.Kind switch
+        {
+            SystemVerilogCore.Tree.VerilogTreeNodeKind.ImportedPackage => node.Name,
+            SystemVerilogCore.Tree.VerilogTreeNodeKind.Header => node.RelativePath,
+            _ => node.Name,
+        };
+    }
+
+    private static string ResolveTreeNodeIcon(IVerilogTreeNode node)
+    {
+        if (node is InMemoryTreeNode treeNode
+            && treeNode.InstancedBuildingBlock is SystemVerilogCore.Verilog.BuildingBlocks.Interface)
+        {
+            return "interface";
+        }
+        return node.Kind switch
+        {
+            SystemVerilogCore.Tree.VerilogTreeNodeKind.InterfaceInstance => "interface",
+            SystemVerilogCore.Tree.VerilogTreeNodeKind.ImportedPackage => "package",
+            SystemVerilogCore.Tree.VerilogTreeNodeKind.Header => "header",
+            _ => "module",
+        };
+    }
+
+    private string ResolveTreeNodeUri(IVerilogTreeNode node)
+    {
+        string? uri = ProjectOwner?.GetUriForRelativePath(node.RelativePath);
+        return uri ?? Id;
+    }
+
+    private string? ResolveTreeNodeAbsolutePath(IVerilogTreeNode node)
+    {
+        string? relativePath = node.RelativePath;
+        if (string.IsNullOrEmpty(relativePath)) return null;
+
+        InMemoryProject? project = ProjectOwner;
+        if (project == null) return null;
+
+        string normalized = relativePath.Replace('\\', '/').TrimStart('/');
+        foreach (string root in project.WorkspaceRoots)
+        {
+            string candidate = Path.Combine(root, normalized.Replace('/', Path.DirectorySeparatorChar));
+            if (File.Exists(candidate)) return candidate;
+        }
+        return null;
     }
 
     /// <summary>
@@ -2226,6 +2477,16 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     }
 
     private pluginVerilog.Data.VerilogFile? _verilogFile;
+
+    /// <summary>
+    /// The plugin-side file this host parses instances with (the same object
+    /// <see cref="GetPluginVerilogFile"/> returns, created on demand when the file
+    /// was not registered in the item tree).
+    /// </summary>
+    internal pluginVerilog.Data.VerilogFile GetPluginVerilogFileForParse()
+    {
+        return _verilogFile ??= CreateVerilogFile();
+    }
 
     private pluginVerilog.Data.VerilogFile CreateVerilogFile()
     {

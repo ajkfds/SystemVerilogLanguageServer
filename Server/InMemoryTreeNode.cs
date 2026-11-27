@@ -237,6 +237,33 @@ internal sealed class InMemoryTreeNodeFactory : IVerilogTreeNodeFactory
         };
     }
 
+    /// <summary>
+    /// The node for a building block a multi-block file lists directly. This host
+    /// models it as an instance of the block itself (the editor does the same), so
+    /// the block's own instantiations nest under it.
+    /// </summary>
+    public IVerilogTreeNode? CreateBuildingBlockNode(
+        IVerilogTreeNode parent,
+        BuildingBlock block)
+    {
+        if (block == null || string.IsNullOrEmpty(block.Name)) return null;
+
+        InMemoryFile? sourceFile = FindFile(block);
+        return new InMemoryTreeNode
+        {
+            Kind = block is Interface
+                ? VerilogTreeNodeKind.InterfaceInstance
+                : VerilogTreeNodeKind.ModuleInstance,
+            Name = block.Name,
+            RelativePath = RelativePathOf(sourceFile) ?? block.File?.FileRelativePath ?? string.Empty,
+            InstanceKey = null,
+            ParsedResult = ParsedResultOf(sourceFile),
+            SourceFile = sourceFile,
+            BuildingBlockName = block.Name,
+            InstancedBuildingBlock = block,
+        };
+    }
+
     public IVerilogTreeNode? CreateImportedPackage(IVerilogTreeNode parent, string packageName)
     {
         if (string.IsNullOrEmpty(packageName)) return null;

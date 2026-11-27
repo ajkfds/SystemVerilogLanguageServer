@@ -2450,14 +2450,17 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // Parse through the UI-free engine, handing it THIS host's document.
         //
-        // The file argument stays the plugin file. Everything the parse needs is
-        // contract-based now (name-space registration, the instance cache, the
-        // parameter-overridden lookup), but the READER of that cache is
-        // `InstanceTextFile.ParsedDocument`, which asks the plugin source file it
-        // wraps. Registering this host object therefore wrote into a different
-        // table and the override result was never found (5 read as 8, five
-        // hierarchy tests red). Bisected repeatedly: reverting only this argument
-        // restores all 1313 tests. See memory/state.md, Stage H (19).
+        // The file argument must stay the plugin file, and the reason is the
+        // ITEM TREE, not the name spaces. Everything the parse itself needs is
+        // contract-based (name-space registration, the parse-result and instance
+        // caches, the parameter-overridden lookup), but the hierarchy is built by
+        // the editor's Updater, and every node it creates is an editor item:
+        // `VerilogModuleInstance.Create` resolves the declaring file from the
+        // definition name space and NARROWS it to `IVerilogRelatedFile` to wrap
+        // it in a `TextFile`. Registering this host object made that narrowing
+        // return null, so no instance node was created at all - the click path
+        // then reported "not an instance" and five hierarchy tests failed.
+        // Measured four times with the same result; see memory/state.md (H (19)).
         return SystemVerilogCore.Parsing.ParseEngine.ParseSystemVerilogAsync(
             text, verilogFile, null,
             _codeDocument as SystemVerilogCore.Documents.IVerilogTextDocument);
@@ -2617,6 +2620,9 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             // reports the file, and a parse drops every message whose buffer
             // belongs to no file. Without it the instance parse produced no
             // diagnostics at all (the "override <value>" hint included).
+            // Same reason as ParseSystemVerilog: the instance node the click path
+            // walks is an editor item built from the plugin file, so the parse has
+            // to register that file (see the note there).
             parsed = SystemVerilogCore.Parsing.ParseEngine.ParseInstanceAsync(
                 CodeDocumentText, pluginFile, moduleName, overrides, null,
                 _codeDocument as SystemVerilogCore.Documents.IVerilogTextDocument)

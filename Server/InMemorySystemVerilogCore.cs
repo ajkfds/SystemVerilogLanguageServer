@@ -816,7 +816,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     // file that does not implement it), so the parse had to be handed the
     // plugin's VerilogFile. Implementing it here lets the parse take the
     // contract.
-    SystemVerilogCore.Verilog.IVerilogNameSpaceFile
+    SystemVerilogCore.Verilog.IVerilogNameSpaceFile,
+    // Hands out the instance items this host derives, so the simulation setup
+    // can read an instance's parse result without the editor's item tree.
+    SystemVerilogCore.Documents.IVerilogInstanceItemSource
 {
     // ---- SystemVerilogCore.Verilog.IVerilogNameSpaceFile -------------------
 
@@ -825,6 +828,33 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// file's own parse result. The name space uses it to resolve a name back to
     /// its declaration.
     /// </summary>
+    /// <summary>
+    /// The instance node called <paramref name="name"/>, derived from this
+    /// file's parse result.
+    /// </summary>
+    /// <remarks>
+    /// The editor answers from its item tree. This host has none, so it runs the
+    /// same UI-free builder the hierarchy listing uses and hands back the node -
+    /// which carries the instance's parameter-overridden parse, exactly what the
+    /// simulation setup needs. Returning null means "no such instance", and the
+    /// caller falls back to the definition file.
+    /// </remarks>
+    object? SystemVerilogCore.Documents.IVerilogInstanceItemSource.FindInstanceItem(string name)
+    {
+        try
+        {
+            foreach (IVerilogTreeNode child in GetTreeNodeChildren(CreateTreeNode()))
+            {
+                if (string.Equals(child.Name, name, StringComparison.Ordinal)) return child;
+            }
+        }
+        catch (Exception)
+        {
+            // An unresolved instance must not fail the collection pass.
+        }
+        return null;
+    }
+
     object? SystemVerilogCore.Verilog.IVerilogNameSpaceFile.FindRootNamedElement(string name)
     {
         SystemVerilogCore.Verilog.ParsedDocument? parsed = ParsedDocument;
@@ -2117,12 +2147,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// </summary>
     internal void PrepareItemTree()
     {
+        // Nothing to prepare any more: the simulation setup reads the instance
+        // tree through IVerilogInstanceItemSource, which this host answers from
+        // the UI-free builder. Kept as a no-op so the request path stays simple.
         EnsureBuilt();
-        pluginVerilog.Data.VerilogFile? pluginFile = GetPluginVerilogFile();
-        if (pluginFile == null) return;
-        pluginVerilog.Data.VerilogCommon.Updater
-            .UpdateAsync(pluginFile, _hierarchyUpdateSemaphore)
-            .GetAwaiter().GetResult();
     }
 
     /// <summary>

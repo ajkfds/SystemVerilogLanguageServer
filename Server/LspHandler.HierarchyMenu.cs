@@ -172,11 +172,10 @@ public sealed partial class LspHandler
         // expansion does.
         InMemoryFile.EnsureProjectBuilt(project);
 
-        // The plugin item tree is only filled by the editor's Updater (the
-        // hierarchy expansion runs it per level). SimulationSetup walks that
-        // tree, so without this pass it would report only the top file and
-        // silently miss the instantiated modules.
-        file.PrepareItemTree();
+        // The simulation setup walks the instance tree. This host answers that
+        // walk from the UI-free builder (FindInstanceItem), so nothing has to be
+        // prepared here - the old PrepareItemTree pass existed only because the
+        // editor's Updater was the sole producer of the item tree.
 
         return file.GetPluginVerilogFilePublic();
     }

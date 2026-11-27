@@ -1944,12 +1944,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// module instantiation in the document (the same scope as the editor's
     /// "autoFormat" tool). Empty when there is nothing to format.
     /// </summary>
-    internal IReadOnlyList<pluginVerilog.CoreBridge.FormattingAdapter.TextEditEntry> GetFormattingEdits()
+    internal IReadOnlyList<SystemVerilogCore.Completion.FormattingProvider.TextEditEntry> GetFormattingEdits()
     {
         EnsureBuilt();
-        if (_parsedDocument == null) return Array.Empty<pluginVerilog.CoreBridge.FormattingAdapter.TextEditEntry>();
-        pluginVerilog.Data.VerilogFile verilogFile = _verilogFile ??= CreateVerilogFile();
-        return pluginVerilog.CoreBridge.FormattingAdapter.GetFormattingEdits(verilogFile, _parsedDocument);
+        if (_parsedDocument == null) return Array.Empty<SystemVerilogCore.Completion.FormattingProvider.TextEditEntry>();
+        return SystemVerilogCore.Completion.FormattingProvider.GetFormattingEdits(_parsedDocument);
     }
 
     /// <summary>

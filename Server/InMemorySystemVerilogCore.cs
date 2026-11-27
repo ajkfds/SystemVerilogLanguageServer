@@ -2423,17 +2423,14 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // Parse through the UI-free engine, handing it THIS host's document.
         //
-        // The file argument must stay the plugin file, and the reason is NOT the
-        // name-space contract (this host implements IVerilogNameSpaceFile, so
-        // registration succeeds either way) - it is the IDENTITY of the object
-        // that ends up registered. The parse stores the very file it was given
-        // into DefinitionNameSpace / PackageNameSpace / UnitNameSpace, and the
-        // readers of those name spaces still narrow the result to the plugin's
-        // IVerilogRelatedFile. Registering this host object made every such
-        // lookup miss: the parameter-override tests then read the DECLARED
-        // parameter values (5 became 8) and eight hierarchy tests failed.
-        // Bisected: reverting only this one argument turns them green again.
-        // See memory/state.md, Stage H (17)/(18).
+        // The file argument stays the plugin file. Name-space registration and
+        // the parameter-overridden lookup are contract-based now, but the
+        // instance parse CACHE KEY is not: the reader builds it from the
+        // instance wrapper (InstanceTextFile) whose VerilogProject is the
+        // workspace project, while this host's VerilogProject is the shared
+        // parser project stub - the two names differ, so the keys differ and the
+        // override result is never found. Bisected: reverting only this argument
+        // restores all 1313 tests. See memory/state.md, Stage H (19).
         return SystemVerilogCore.Parsing.ParseEngine.ParseSystemVerilogAsync(
             text, verilogFile, null,
             _codeDocument as SystemVerilogCore.Documents.IVerilogTextDocument);

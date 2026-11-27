@@ -2454,16 +2454,22 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // Parse through the UI-free engine, handing it THIS host's document.
         //
-        // The file argument must stay the plugin file. The hierarchy is
-        // contract-based now (the listing AND the click path walk the UI-free
-        // builder), and 4 of the 5 parameter-override tests pass with this host
-        // as the file - but one does not: the immediate instance parse inside
-        // `ModuleInstantiation.ParseAsync` creates the instance through
-        // `CreateInstanceItem` -> `VerilogModuleInstance.Create`, which wraps the
-        // declaring file in a `TextFile` and therefore needs the editor's file
-        // type. Registering this host object makes that wrap impossible, so the
-        // override is never applied during a plain re-parse of the parent.
-        // See memory/state.md, Stage H (20).
+        // The file argument must stay the plugin file, and the reason is now
+        // exactly ONE thing: `ModuleInstantiation.ParseAsync` calls
+        // `CreateInstanceItem` (the parser's hook that asks the host for an
+        // instance item) and the editor's implementation wraps the declaring
+        // file in a `TextFile`. Registering this host object makes that wrap
+        // impossible, so the instance item is never created: the include inside
+        // a module body stops resolving, the simulation setup misses the
+        // instantiated module, and the parameter override is not applied during
+        // the parent's re-parse (6 tests).
+        //
+        // Everything ELSE is contract-based already (name-space registration,
+        // the parse-result / instance caches, the parameter-overridden lookup,
+        // the instance tree for listing AND click, and the simulation setup's
+        // instance items). Removing this last argument needs
+        // `CreateInstanceItem` to stop producing editor items - see
+        // memory/state.md, Stage H (21).
         return SystemVerilogCore.Parsing.ParseEngine.ParseSystemVerilogAsync(
             text, verilogFile, null,
             _codeDocument as SystemVerilogCore.Documents.IVerilogTextDocument);

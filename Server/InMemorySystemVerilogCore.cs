@@ -865,9 +865,18 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
                 if (recordedInstances.TryGetValue(name, out var recorded)) return recorded;
             }
 
+            // The builder's nodes do not carry the instance's own parse (it is
+            // filled on expansion), so a lookup that must answer "what did this
+            // instance parse to" also asks the instance cache - the same table
+            // GetInstancedBuildingBlock reads.
             foreach (IVerilogTreeNode child in GetTreeNodeChildren(CreateTreeNode()))
             {
-                if (string.Equals(child.Name, name, StringComparison.Ordinal)) return child;
+                if (!string.Equals(child.Name, name, StringComparison.Ordinal)) continue;
+                if (child is InMemoryTreeNode node && node.ParsedResult == null)
+                {
+                    EnsureInstanceNodeParsed(node);
+                }
+                return child;
             }
         }
         catch (Exception)

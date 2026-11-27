@@ -470,7 +470,11 @@ internal sealed class InMemoryProject : ISystemVerilogProject,
             // produced for its instances are now stale. Drop them so an expand
             // re-parses the source and shows the current instantiations (the
             // editor's re-parse loop does this; the LSP host has none).
-            (textFile as pluginVerilog.Data.VerilogFile)?.ClearInstancedParsedDocuments();
+            // Through the cache contract: dropping the instance results is a
+            // host operation, and a host that drives its own buffer (this one)
+            // has no editor re-parse loop to notice the stale entries.
+            (textFile as SystemVerilogCore.Documents.IVerilogSourceFileInstanceCache)
+                ?.ClearInstanceParsedDocuments();
         }
     }
 
@@ -858,6 +862,14 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         if (ParseFile is SystemVerilogCore.Documents.IVerilogSourceFileInstanceCache cache)
         {
             cache.RegisterInstanceParsedDocument(instanceKey, parsedDocument);
+        }
+    }
+
+    void SystemVerilogCore.Documents.IVerilogSourceFileInstanceCache.ClearInstanceParsedDocuments()
+    {
+        if (ParseFile is SystemVerilogCore.Documents.IVerilogSourceFileInstanceCache cache)
+        {
+            cache.ClearInstanceParsedDocuments();
         }
     }
 

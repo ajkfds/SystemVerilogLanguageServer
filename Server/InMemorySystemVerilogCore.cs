@@ -1428,7 +1428,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// </summary>
     private List<CodeEditor2.Data.Item> GetUpdatedChildren(CodeEditor2.Data.Item item)
     {
-        if (item is not pluginVerilog.Data.IVerilogRelatedFile verilogItem)
+        // The Updater is the editor's item-tree builder (it applies
+        // VerilogTreeBuilder's children), so this path is the one place the
+        // language server still needs the editor's data layer: the tree is a
+        // host structure, not something the UI-free builder can populate.
+        if (item is not SystemVerilogCore.Documents.IVerilogSourceFile verilogItem)
         {
             return item.Items.GetSnapShot();
         }
@@ -1437,9 +1441,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         {
             EnsureWorkspaceBuilt();
             EnsureInstanceParsed(verilogItem);
-            pluginVerilog.Data.VerilogCommon.Updater
-                .UpdateAsync(verilogItem, _hierarchyUpdateSemaphore)
-                .GetAwaiter().GetResult();
+            if (verilogItem is pluginVerilog.Data.IVerilogRelatedFile editorItem)
+            {
+                pluginVerilog.Data.VerilogCommon.Updater
+                    .UpdateAsync(editorItem, _hierarchyUpdateSemaphore)
+                    .GetAwaiter().GetResult();
+            }
         }
         catch (Exception ex)
         {
@@ -1453,7 +1460,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// (an instance is parsed lazily on expand, like the editor). The file root
     /// itself is already parsed by <see cref="EnsureBuilt"/>.
     /// </summary>
-    private static void EnsureInstanceParsed(pluginVerilog.Data.IVerilogRelatedFile item)
+    private static void EnsureInstanceParsed(SystemVerilogCore.Documents.IVerilogSourceFile item)
     {
         // Re-parse when the parse result is stale: an instance caches the
         // ParsedDocument produced from its source file (keyed by module +
@@ -1461,16 +1468,19 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         // the instance's cached parse still reflects the old text, so the
         // hierarchy under a parent would keep showing the previous
         // instantiations. CheckDirty() compares the document version and sets
-        // ReparseRequested, exactly like the editor.
-        item.CheckDirty();
-        if (item.VerilogParsedDocument != null && !item.ReparseRequested) return;
+        // ReparseRequested, exactly like the editor; both are host concerns, so
+        // they stay behind the editor's file type.
+        if (item is not pluginVerilog.Data.IVerilogRelatedFile editorFile) return;
+        editorFile.CheckDirty();
+        if (editorFile.VerilogParsedDocument != null && !editorFile.ReparseRequested) return;
 
-        CodeEditor2.CodeEditor.Parser.DocumentParser? parser = item.CreateDocumentParser(
-            CodeEditor2.CodeEditor.Parser.DocumentParser.ParseModeEnum.BackgroundParse, null);
+        SystemVerilogCore.Parsing.IVerilogDocumentParser? parser =
+            item.CreateVerilogDocumentParser(
+                SystemVerilogCore.Parsing.VerilogParseMode.BackgroundParse, null);
         if (parser == null) return;
 
         parser.ParseAsync().GetAwaiter().GetResult();
-        item.AcceptParsedDocumentAsync(parser).GetAwaiter().GetResult();
+        item.AcceptVerilogParsedDocumentAsync(parser).GetAwaiter().GetResult();
     }
 
     /// <summary>
@@ -1636,8 +1646,9 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // imported package / include header (or an instance whose source could
         // not be resolved): fall back to the item's own parse result
-        if (item is not pluginVerilog.Data.IVerilogRelatedFile verilogItem) return false;
-        SystemVerilogCore.Verilog.ParsedDocument? parsed = verilogItem.VerilogParsedDocument;
+        if (item is not SystemVerilogCore.Documents.IVerilogSourceFile verilogItem) return false;
+        SystemVerilogCore.Verilog.ParsedDocument? parsed =
+            verilogItem.VerilogParsedResult as SystemVerilogCore.Verilog.ParsedDocument;
         if (parsed?.Root == null) return false;
 
         foreach (SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock block
@@ -1681,12 +1692,9 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     private static SystemVerilogCore.Verilog.Items.IBuildingBlockInstantiation? GetInstantiatingItem(
         CodeEditor2.Data.Item item)
     {
-        return item switch
-        {
-            pluginVerilog.Data.VerilogModuleInstance module => module.GetParentInstanciatiation(),
-            pluginVerilog.Data.InterfaceInstance iface => iface.GetParentInstanciatiation(),
-            _ => null,
-        };
+        // The node contract answers this for every instance kind, so the
+        // hierarchy no longer names the editor's node classes.
+        return (item as SystemVerilogCore.Documents.IVerilogHierarchyNode)?.InstantiatingItem;
     }
 
     /// <summary>
@@ -1696,14 +1704,14 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// </summary>
     private static string? DescribeItem(CodeEditor2.Data.Item item)
     {
-        return item switch
+        // A hierarchy node answers with its own readable name (instance name /
+        // package name / header path); anything else is a plain file, whose
+        // relative path is the useful detail.
+        if (item is SystemVerilogCore.Documents.IVerilogHierarchyNode node)
         {
-            pluginVerilog.Data.VerilogModuleInstance module => module.InstanceName,
-            pluginVerilog.Data.InterfaceInstance iface => iface.InstanceName,
-            pluginVerilog.Data.ImportedPackage package => package.PackageName,
-            pluginVerilog.Data.VerilogHeaderInstance header => header.RelativePath,
-            _ => item.RelativePath,
-        };
+            return node.HierarchyNodeName;
+        }
+        return item.RelativePath;
     }
 
     /// <summary>
@@ -1720,9 +1728,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// </summary>
     private static string? ResolveItemIcon(CodeEditor2.Data.Item item)
     {
-        switch (item)
+        if (item is not SystemVerilogCore.Documents.IVerilogHierarchyNode node) return "module";
+
+        switch (node.HierarchyNodeKind)
         {
-            case pluginVerilog.Data.VerilogModuleInstance module:
+            case SystemVerilogCore.Documents.VerilogHierarchyNodeKind.ModuleInstance:
                 // the instantiated building block decides the icon, so an
                 // interface instantiated through the module path still shows
                 // the interface icon. Resolving it can throw (the project
@@ -1730,7 +1740,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
                 // unresolved), and an icon must never fail the tree listing.
                 try
                 {
-                    return module.GetParentInstanciatiation()?.GetInstancedBuildingBlock()
+                    return node.InstantiatingItem?.GetInstancedBuildingBlock()
                         is SystemVerilogCore.Verilog.BuildingBlocks.Interface
                         ? "interface"
                         : "module";
@@ -1739,11 +1749,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
                 {
                     return "module";
                 }
-            case pluginVerilog.Data.InterfaceInstance:
+            case SystemVerilogCore.Documents.VerilogHierarchyNodeKind.InterfaceInstance:
                 return "interface";
-            case pluginVerilog.Data.ImportedPackage:
+            case SystemVerilogCore.Documents.VerilogHierarchyNodeKind.ImportedPackage:
                 return "package";
-            case pluginVerilog.Data.VerilogHeaderInstance:
+            case SystemVerilogCore.Documents.VerilogHierarchyNodeKind.IncludeHeader:
                 return "header";
             default:
                 return "module";
@@ -1772,11 +1782,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// </remarks>
     private static string? ResolveItemBadge(CodeEditor2.Data.Item item)
     {
-        if (item is not pluginVerilog.Data.IVerilogRelatedFile file) return null;
+        if (item is not SystemVerilogCore.Documents.IVerilogSourceFile file) return null;
 
         try
         {
-            SystemVerilogCore.Verilog.ParsedDocument? parsed = file.VerilogParsedDocument;
+            SystemVerilogCore.Verilog.ParsedDocument? parsed =
+                file.VerilogParsedResult as SystemVerilogCore.Verilog.ParsedDocument;
             if (parsed != null)
             {
                 if (parsed.ErrorCount > 0) return "error";
@@ -1791,10 +1802,12 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         // Unsaved edits. InstanceTextFile shares the SOURCE file's CodeDocument,
         // so an edited instance reports the same IsDirty as its source file -
-        // exactly what the editor's node icons show.
+        // exactly what the editor's node icons show. The buffer is read through
+        // the editor's text-file contract because "is dirty" is a host concern
+        // that the parser contract does not carry.
         try
         {
-            if (file.CodeDocument?.IsDirty == true) return "dirty";
+            if ((item as CodeEditor2.Data.ITextFile)?.CodeDocument?.IsDirty == true) return "dirty";
         }
         catch (Exception)
         {
@@ -1812,10 +1825,11 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     /// </summary>
     private static string? ResolveItemIconColor(CodeEditor2.Data.Item item)
     {
-        if (item is not pluginVerilog.Data.IVerilogRelatedFile file) return null;
+        if (item is not SystemVerilogCore.Documents.IVerilogSourceFile file) return null;
         try
         {
-            SystemVerilogCore.Verilog.ParsedDocument? parsed = file.VerilogParsedDocument;
+            SystemVerilogCore.Verilog.ParsedDocument? parsed =
+                file.VerilogParsedResult as SystemVerilogCore.Verilog.ParsedDocument;
             if (parsed == null) return null;
             if (parsed.ErrorCount > 0) return "errorForeground";
             if (parsed.WarningCount > 0) return "editorWarning.foreground";
@@ -2343,16 +2357,19 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
         }
 
         // The target must be an instance (module / interface): only those carry
-        // parameter overrides and a target building-block name.
-        switch (current)
+        // parameter overrides and a target building-block name. The node
+        // contract answers both, so no editor node type is named here.
+        if (current is SystemVerilogCore.Documents.IVerilogHierarchyNode node)
         {
-            case pluginVerilog.Data.VerilogModuleInstance module:
-                return ParseAndApplyInstance(parentUri, module.InstanceName, module.ParameterOverrides);
-            case pluginVerilog.Data.InterfaceInstance iface:
-                return ParseAndApplyInstance(parentUri, iface.InstanceName, iface.ParameterOverrides);
-            default:
-                return false;
+            switch (node.HierarchyNodeKind)
+            {
+                case SystemVerilogCore.Documents.VerilogHierarchyNodeKind.ModuleInstance:
+                case SystemVerilogCore.Documents.VerilogHierarchyNodeKind.InterfaceInstance:
+                    return ParseAndApplyInstance(
+                        parentUri, node.HierarchyNodeName, node.HierarchyParameterOverrides);
+            }
         }
+        return false;
     }
 
     /// <summary>
@@ -2484,7 +2501,7 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
 
         foreach (CodeEditor2.Data.Item child in root.Items.GetSnapShot())
         {
-            if (child is not pluginVerilog.Data.IVerilogRelatedFile verilogChild) continue;
+            if (child is not SystemVerilogCore.Documents.IVerilogSourceFile verilogChild) continue;
 
             EnsureInstanceParsed(verilogChild);
             EnsureInstanceTreeParsed(child, depth + 1);

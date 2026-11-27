@@ -830,7 +830,10 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     SystemVerilogCore.Verilog.IVerilogNameSpaceFile,
     // Hands out the instance items this host derives, so the simulation setup
     // can read an instance's parse result without the editor's item tree.
-    SystemVerilogCore.Documents.IVerilogInstanceItemSource
+    SystemVerilogCore.Documents.IVerilogInstanceItemSource,
+    // The recording side of the same thing: the parser registers an instance it
+    // parsed, because this host has no item tree to put a node in.
+    SystemVerilogCore.Documents.IVerilogInstanceItemSourceProvider
 {
     // ---- SystemVerilogCore.Verilog.IVerilogNameSpaceFile -------------------
 
@@ -854,6 +857,14 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
     {
         try
         {
+            // A parse the parser recorded itself (an instance of a module this
+            // host declared) answers first: the builder derives the tree from
+            // parse results, and the recorded result IS that instance's parse.
+            lock (recordedInstances)
+            {
+                if (recordedInstances.TryGetValue(name, out var recorded)) return recorded;
+            }
+
             foreach (IVerilogTreeNode child in GetTreeNodeChildren(CreateTreeNode()))
             {
                 if (string.Equals(child.Name, name, StringComparison.Ordinal)) return child;
@@ -864,6 +875,30 @@ internal sealed class InMemoryFile : ISystemVerilogFile,
             // An unresolved instance must not fail the collection pass.
         }
         return null;
+    }
+
+    /// <summary>
+    /// Instance parse results the parser recorded through
+    /// <see cref="SystemVerilogCore.Documents.IVerilogInstanceItemSourceProvider"/>.
+    ///
+    /// <para>
+    /// The editor keeps these as item-tree nodes; this host has no tree, so the
+    /// parse results themselves are what a name lookup answers with. Guarded
+    /// because a parse records from the parse thread while the hierarchy / menu
+    /// requests read from the message loop.
+    /// </para>
+    /// </summary>
+    private readonly Dictionary<string, SystemVerilogCore.Verilog.ParsedDocument> recordedInstances = new();
+
+    void SystemVerilogCore.Documents.IVerilogInstanceItemSourceProvider.RegisterInstanceItem(
+        string instanceName, SystemVerilogCore.Parsing.IParsedDocument parsedDocument)
+    {
+        if (string.IsNullOrEmpty(instanceName)) return;
+        if (parsedDocument is not SystemVerilogCore.Verilog.ParsedDocument parsed) return;
+        lock (recordedInstances)
+        {
+            recordedInstances[instanceName] = parsed;
+        }
     }
 
     object? SystemVerilogCore.Verilog.IVerilogNameSpaceFile.FindRootNamedElement(string name)

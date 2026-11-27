@@ -44,13 +44,32 @@ public sealed partial class LspHandler
         }
 
         string? instancePath = ReadString(parameters, "instancePath");
-        pluginVerilog.Data.IVerilogRelatedFile? file = ResolveHierarchyMenuFile(parameters);
+        SystemVerilogCore.Documents.IVerilogSourceFile? file = ResolveHierarchyMenuFile(parameters);
 
-        pluginVerilog.CoreBridge.HierarchyMenuAdapter.MenuResult result =
-            pluginVerilog.CoreBridge.HierarchyMenuAdapter.Build(kind, file, instancePath);
+        // The rows come from the catalog in SystemVerilogCore, and the builder
+        // decides which of them apply to this node. The host only has to say
+        // which node it is and (for the simulation row) how to collect the file
+        // list, which walks the host's own item tree.
+        SystemVerilogCore.Menus.NavigateNodeMenuContext context = new()
+        {
+            Kind = SystemVerilogCore.Menus.NavigateNodeMenuContext.KindFromName(kind),
+            File = file,
+            NodeLabel = ReadString(parameters, "label"),
+            InstancePath = instancePath,
+            WorkspaceRelativePath = ReadString(parameters, "relativePath"),
+            FsPath = ReadString(parameters, "fsPath"),
+            DirPath = ReadString(parameters, "fsPath") is string p && p.Length > 0
+                ? System.IO.Path.GetDirectoryName(p)
+                : null,
+            SimulationSetupText = BuildSimulationSetupText,
+        };
+
+        SystemVerilogCore.Menus.NavigateNodeMenuBuilder.MenuResult result =
+            SystemVerilogCore.Menus.NavigateNodeMenuBuilder.Build(
+                context, SystemVerilogCore.Menus.HierarchyMenuCatalog.Hosts.VsCode);
 
         dto.Message = result.Message;
-        foreach (pluginVerilog.CoreBridge.HierarchyMenuAdapter.MenuEntry entry in result.Entries)
+        foreach (SystemVerilogCore.Menus.NavigateNodeMenuBuilder.MenuEntry entry in result.Entries)
         {
             dto.Entries.Add(new HierarchyMenuEntryDto
             {
@@ -84,26 +103,26 @@ public sealed partial class LspHandler
         string? relativePath = ReadString(parameters, "relativePath");
         string? argument = ReadString(parameters, "argument");
         string? kind = ReadString(parameters, "kind");
-        pluginVerilog.Data.IVerilogRelatedFile? file = ResolveHierarchyMenuFile(parameters);
+        SystemVerilogCore.Documents.IVerilogSourceFile? file = ResolveHierarchyMenuFile(parameters);
 
         // The catalog is the single source of truth for both hosts, so the entry
-        // is run through the shared adapter (the editor calls the same method).
-        pluginVerilog.CoreBridge.NavigateNodeMenuContext context =
-            new pluginVerilog.CoreBridge.NavigateNodeMenuContext
-            {
-                Kind = pluginVerilog.CoreBridge.NavigateNodeMenuContext.KindFromName(kind),
-                File = file,
-                NodeLabel = label,
-                InstancePath = instancePath,
-                WorkspaceRelativePath = relativePath,
-                FsPath = fsPath,
-                DirPath = string.IsNullOrEmpty(fsPath)
-                    ? null
-                    : System.IO.Path.GetDirectoryName(fsPath),
-            };
+        // is run through the shared builder (the editor calls the same method).
+        SystemVerilogCore.Menus.NavigateNodeMenuContext context = new()
+        {
+            Kind = SystemVerilogCore.Menus.NavigateNodeMenuContext.KindFromName(kind),
+            File = file,
+            NodeLabel = label,
+            InstancePath = instancePath,
+            WorkspaceRelativePath = relativePath,
+            FsPath = fsPath,
+            DirPath = string.IsNullOrEmpty(fsPath)
+                ? null
+                : System.IO.Path.GetDirectoryName(fsPath),
+            SimulationSetupText = BuildSimulationSetupText,
+        };
 
-        pluginVerilog.CoreBridge.NavigateNodeMenuAdapter.InvokeResult result =
-            pluginVerilog.CoreBridge.NavigateNodeMenuAdapter.Invoke(id, context, argument);
+        SystemVerilogCore.Menus.NavigateNodeMenuBuilder.InvokeResult result =
+            SystemVerilogCore.Menus.NavigateNodeMenuBuilder.Invoke(id, context, argument);
 
         return new HierarchyMenuInvokeResultDto
         {
@@ -116,9 +135,9 @@ public sealed partial class LspHandler
         };
     }
 
-    /// <summary>Maps the plugin's operation onto the wire DTO.</summary>
+    /// <summary>Maps the builder's operation onto the wire DTO.</summary>
     private static HierarchyMenuOperationDto? ToOperationDto(
-        pluginVerilog.CoreBridge.NavigateNodeMenuAdapter.ClientOperation? operation)
+        SystemVerilogCore.Menus.NavigateNodeMenuBuilder.ClientOperation? operation)
     {
         if (operation == null) return null;
         return new HierarchyMenuOperationDto
@@ -136,7 +155,7 @@ public sealed partial class LspHandler
     /// it from disk when it is not open keeps a node menu usable without having
     /// opened the file first.
     /// </summary>
-    private pluginVerilog.Data.IVerilogRelatedFile? ResolveHierarchyMenuFile(JsonElement parameters)
+    private SystemVerilogCore.Documents.IVerilogSourceFile? ResolveHierarchyMenuFile(JsonElement parameters)
     {
         string? uri = ReadString(parameters, "uri");
         if (string.IsNullOrEmpty(uri)) return null;
@@ -160,6 +179,102 @@ public sealed partial class LspHandler
         file.PrepareItemTree();
 
         return file.GetPluginVerilogFilePublic();
+    }
+
+    /// <summary>
+    /// The body of the "Simulation Setup (files)" row: the top module plus every
+    /// file the simulator would compile, and the include paths.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This is the one row whose answer a UI-free builder cannot produce: it
+    /// walks the host's item tree (the editor's project / the server's
+    /// workspace), so <c>NavigateNodeMenuContext.SimulationSetupText</c> carries
+    /// this callback instead. The collection itself is the plugin's
+    /// <c>SimulationSetup</c>, so the editor and VS Code report the same list
+    /// rather than two implementations.
+    /// </para>
+    /// <para>
+    /// Instance nodes are passed as the instance file (not the base file),
+    /// because only the instance parse carries the parameter overrides written
+    /// at the instantiation - the same reason the editor passes
+    /// <c>VerilogModuleInstance</c>.
+    /// </para>
+    /// </remarks>
+    private static string? BuildSimulationSetupText(
+        SystemVerilogCore.Menus.NavigateNodeMenuContext context)
+    {
+        // SimulationSetup walks the plugin's item tree, so the contract file has
+        // to be one of the plugin's items. The cast is the host's business: the
+        // builder never sees it.
+        pluginVerilog.Data.IVerilogRelatedFile? file =
+            context.File as pluginVerilog.Data.IVerilogRelatedFile;
+        if (file == null) return null;
+
+        SystemVerilogCore.Verilog.ParsedDocument? parsedDocument =
+            file.VerilogParsedResult as SystemVerilogCore.Verilog.ParsedDocument;
+        if (parsedDocument?.Root == null) return null;
+
+        // Pick the building block this node represents: the instance's own
+        // module when known, otherwise the first non-class block (the same rule
+        // SimulationSetup.Create uses for a plain file).
+        string? buildingBlockName = context.NodeLabel;
+        if (string.IsNullOrEmpty(buildingBlockName)
+            || !parsedDocument.Root.BuildingBlocks.ContainsKey(buildingBlockName))
+        {
+            buildingBlockName = null;
+            foreach (SystemVerilogCore.Verilog.BuildingBlocks.BuildingBlock block
+                     in parsedDocument.Root.BuildingBlocks.Values)
+            {
+                if (block is SystemVerilogCore.Verilog.BuildingBlocks.Class) continue;
+                if (block is SystemVerilogCore.Verilog.BuildingBlocks.InterfaceClass) continue;
+                if (block is SystemVerilogCore.Verilog.BuildingBlocks.Package) continue;
+                buildingBlockName = block.Name;
+                break;
+            }
+        }
+        if (buildingBlockName == null) return null;
+
+        pluginVerilog.Data.SimulationSetup? setup;
+        try
+        {
+            setup = pluginVerilog.Data.SimulationSetup.Create(file, buildingBlockName);
+        }
+        catch (Exception)
+        {
+            // A collection failure must not take the menu down; the row reports
+            // itself as uncollectable instead.
+            return null;
+        }
+        if (setup == null) return null;
+
+        System.Text.StringBuilder sb = new();
+        sb.Append("top: ").Append(setup.TopName ?? buildingBlockName).Append('\n');
+
+        System.Collections.Generic.List<string> files = new();
+        foreach (pluginVerilog.Data.IVerilogRelatedFile target in setup.GetAllFiles())
+        {
+            string? path = pluginVerilog.Data.SimulationSetup.GetAbsolutePath(target)
+                ?? target.RelativePath;
+            if (!string.IsNullOrEmpty(path)) files.Add(path);
+        }
+        sb.Append('\n').Append("files (").Append(files.Count).Append("):\n");
+        foreach (string path in files) sb.Append("  ").Append(path).Append('\n');
+
+        System.Collections.Generic.List<string> includePaths = setup.GetAllIncludePaths();
+        if (includePaths.Count > 0)
+        {
+            sb.Append('\n').Append("include paths (").Append(includePaths.Count).Append("):\n");
+            foreach (string path in includePaths) sb.Append("  ").Append(path).Append('\n');
+        }
+
+        if (setup.UnfoundModules.Count > 0)
+        {
+            sb.Append('\n').Append("unresolved (").Append(setup.UnfoundModules.Count).Append("):\n");
+            foreach (string name in setup.UnfoundModules) sb.Append("  ").Append(name).Append('\n');
+        }
+
+        return sb.ToString();
     }
 
     /// <summary>Reads an optional string property, or null when absent / not a string.</summary>

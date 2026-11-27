@@ -46,8 +46,8 @@ internal static class Program
                 return;
             }
 
-            pluginVerilog.CoreBridge.PackageJsonWriteResult result =
-                pluginVerilog.CoreBridge.HierarchyMenuManifest.WriteToPackageJson(path, write);
+            SystemVerilogCore.Menus.PackageJsonWriteResult result =
+                SystemVerilogCore.Menus.HierarchyMenuManifest.WriteToPackageJson(path, write);
 
             if (result.Failed)
             {
@@ -144,7 +144,7 @@ internal static class Program
         // committed package.json is written by --write-hierarchy-menu-manifest).
         if (args.Length > 0 && args[0] == "--hierarchy-menu-manifest")
         {
-            Console.Out.Write(pluginVerilog.CoreBridge.HierarchyMenuManifest.ToJson());
+            Console.Out.Write(SystemVerilogCore.Menus.HierarchyMenuManifest.ToJson());
             Console.Out.Write('\n');
             return;
         }
